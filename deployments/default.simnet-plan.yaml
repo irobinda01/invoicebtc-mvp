@@ -1,0 +1,60 @@
+id: 0
+name: Simulated deployment, used as a default for `clarinet console`, `clarinet test` and `clarinet check`
+network: simnet
+genesis:
+  wallets:
+  - name: deployer
+    address: STC5KHM41H6WHAST7MWWDD807YSPRQKJ68T330BQ
+    balance: '0'
+    sbtc-balance: '1000000000'
+  - name: wallet_1
+    address: STPQRWQMH3FJQWSVK5BKE0K6S00GEAZJH73B77JK
+    balance: '0'
+    sbtc-balance: '1000000000'
+  - name: wallet_2
+    address: ST2BXYHE8GG3D713TY21QWNP79232SCMFKGZYNT81
+    balance: '0'
+    sbtc-balance: '1000000000'
+  - name: wallet_3
+    address: ST1PGN9MZTKZ2TVBSJXJNAY4P7PCMJQMA9TS115N
+    balance: '0'
+    sbtc-balance: '1000000000'
+  - name: wallet_4
+    address: ST3SGJ2X0SJT5V1DFK9X2KHJ12RE6W6HM3DKF9QH9
+    balance: '0'
+    sbtc-balance: '1000000000'
+  contracts:
+  - genesis
+  - lockup
+  - bns
+  - cost-voting
+  - costs
+  - pox
+  - costs-2
+  - pox-2
+  - costs-3
+  - pox-3
+  - pox-4
+  - signers
+  - signers-voting
+  - costs-4
+plan:
+  batches:
+  - id: 0
+    transactions:
+    - transaction-type: emulated-contract-publish
+      contract-name: sip-010-trait
+      emulated-sender: STC5KHM41H6WHAST7MWWDD807YSPRQKJ68T330BQ
+      path: contracts/sip-010-trait.clar
+      clarity-version: 2
+    - transaction-type: emulated-contract-publish
+      contract-name: mock-sbtc
+      emulated-sender: STC5KHM41H6WHAST7MWWDD807YSPRQKJ68T330BQ
+      path: contracts/mock-sbtc.clar
+      clarity-version: 2
+    - transaction-type: emulated-contract-publish
+      contract-name: invoicebtc
+      emulated-sender: STC5KHM41H6WHAST7MWWDD807YSPRQKJ68T330BQ
+      path: contracts/invoicebtc.clar
+      clarity-version: 2
+    epoch: '2.5'

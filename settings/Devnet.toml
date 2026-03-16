@@ -1,0 +1,18 @@
+[network]
+name = "devnet"
+deployment_fee_rate = 10
+
+[accounts.deployer]
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+[accounts.wallet_1]
+mnemonic = "legal winner thank year wave sausage worth useful legal winner thank yellow"
+
+[accounts.wallet_2]
+mnemonic = "letter advice cage absurd amount doctor acoustic avoid letter advice cage above"
+
+[accounts.wallet_3]
+mnemonic = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong"
+
+[accounts.wallet_4]
+mnemonic = "ozone drill grab fiber curtain grace pudding thank cruise elder eight picnic"
