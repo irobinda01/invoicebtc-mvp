@@ -1,88 +1,297 @@
-# InvoiceBTC
+# InvoiceBTC MVP
 
-InvoiceBTC is an sBTC-native invoice factoring protocol built on Stacks that helps freelancers, exporters, and merchants unlock immediate liquidity from signed unpaid invoices. Instead of waiting 30-90 days for payment, a merchant can create a milestone-based invoice, have it signed on-chain by both the merchant and client, and secure the full invoice value in escrow using sBTC. A liquidity provider can then fund that specific invoice at a discount, giving the merchant upfront working capital while earning yield from escrow-backed future repayment.
+Escrow-backed, milestone-based invoice factoring on Stacks public testnet using a SIP-010 sBTC integration path.
 
-The protocol is designed to keep the full lifecycle Bitcoin-native end to end. Invoice creation, approval, escrow funding, LP funding, milestone settlement, repayment, dispute handling, and leftover fund routing all happen around sBTC on Stacks. This creates a new Bitcoin DeFi use case focused on real commercial activity rather than simple transfers or speculative trading.
+## Current MVP Scope
 
-For the MVP, InvoiceBTC implements a single-invoice direct-funding model: one merchant, one client, one invoice, and one liquidity provider. Each invoice is broken into milestones with pre-defined payout and repayment logic, allowing capital to flow in a structured and transparent way while reducing default risk through upfront client escrow.
+This repo currently implements:
 
-## Why this matters
+- on-chain invoice creation with milestone allocations
+- merchant/client on-chain signing
+- full client escrow deposit before any LP funding
+- milestone-by-milestone LP funding
+- merchant milestone completion submission with proof hash
+- client milestone confirmation on-chain
+- maturity-time LP repayment from escrow for approved milestones only
+- dispute transition for unresolved milestones
+- close and leftover refund flows
+- a public-testnet frontend wired to real contract calls and read-only calls
+- a local Clarinet/Vitest contract test harness
 
-Millions of freelancers, exporters, and small merchants face cash-flow problems because invoices are paid late. InvoiceBTC turns those locked future payments into usable working capital today, while also creating a secured yield opportunity for liquidity providers. On Stacks, this shows how sBTC can power practical Bitcoin-native financial infrastructure for real-world commerce.
+This repo does not currently implement:
 
-## Core MVP flow
+- pooled liquidity
+- multiple LPs per invoice
+- arbitration beyond a blocking dispute state
+- automatic invoice editing after creation
+- a live public-testnet sBTC token contract in this repo
 
-1. Merchant creates a milestone-based invoice in sBTC.
-2. Merchant signs the invoice on-chain.
-3. Client signs the invoice on-chain.
-4. Client locks the full invoice face value in escrow.
-5. A liquidity provider funds that specific invoice at a discount.
-6. As milestones are completed, repayment flows from client escrow to the LP.
-7. Leftover or cancelled amounts are returned according to protocol rules.
-8. If a milestone is incomplete at due time, the invoice enters dispute state.
+## Contracts In This Repo
 
-## MVP contract layout
+- `contracts/invoicebtc.clar`
+  Main invoice factoring contract.
+- `contracts/sip-010-trait.clar`
+  Trait interface used by `invoicebtc` for SIP-010 token interaction.
+- `contracts/mock-sbtc.clar`
+  Local test-only SIP-010 token used by the contract test suite. It is not part of the public testnet runtime flow.
 
-- `contracts/invoicebtc.clar`: invoice lifecycle, milestone workflow, escrow accounting, LP funding, settlement, disputes, cancellation, refunds, and closeout
-- `contracts/mock-sbtc.clar`: minimal SIP-010-style token used for local testing
-- `contracts/sip-010-trait.clar`: minimal token trait interface
+## Architecture Summary
 
-## Invoice lifecycle
+- `contracts/invoicebtc.clar` stores invoice roles, milestones, escrow accounting, LP funding progress, settlement totals, and refund totals.
+- `frontend/` is a Next.js app that connects testnet wallets, reads invoice data from the Stacks API, derives real permissions from connected wallet addresses, and submits contract calls with post conditions on token-moving transactions.
+- `tests/invoicebtc.test.js` verifies the staged milestone funding sequence in Clarinet simnet.
 
-Invoice state machine:
-- `draft`: invoice has been created
-- `merchant-signed`: merchant has signed
-- `client-signed`: client has signed or both parties are now ready for escrow
-- `escrow-funded`: client has escrowed the full face value
-- `funded-by-lp`: one LP has funded the merchant at the agreed discount
-- `active`: milestone completion and settlement are in progress
-- `dispute`: an overdue unresolved milestone has been disputed
-- `completed`: all milestones were resolved and the full face value was settled to the LP
-- `cancelled`: the invoice was cancelled or closed with unresolved value returned to the client
+## Contract Storage Design
 
-Milestone state machine:
-- `pending`: waiting for merchant completion
-- `merchant-requested`: merchant submitted proof for review
-- `approved`: client approved the milestone
-- `repaid-to-lp`: escrow released the milestone repayment amount to the LP
-- `disputed`: the milestone missed its deadline and was disputed
-- `cancelled`: the milestone was cancelled during invoice cancellation or closeout
+`invoices` map stores:
 
-## Escrow flow
+- `merchant`
+- `client`
+- `lp`
+- `face-value`
+- `total-lp-funding`
+- `status`
+- `created-at`
+- `funding-deadline`
+- `maturity-height`
+- `metadata-hash`
+- `merchant-signed`
+- `client-signed`
+- `milestone-count`
+- `total-lp-advanced`
+- `total-escrowed`
+- `total-settled`
+- `total-refunded`
 
-1. The merchant creates the invoice and milestone schedule.
-2. Merchant and client sign with separate on-chain calls.
-3. The client escrows the full invoice face value into the contract.
-4. One LP funds the merchant with the precomputed discounted amount.
-5. The contract keeps explicit accounting for total escrowed, settled, and refunded balances.
+`milestones` map stores:
 
-## Milestone settlement
+- `face-value`
+- `merchant-payout-amount`
+- `lp-repayment-amount`
+- `due-block-height`
+- `proof-hash`
+- `state`
 
-1. The merchant submits milestone proof.
-2. The client approves the milestone.
-3. Anyone can settle an approved milestone.
-4. Settlement transfers the milestone repayment amount from contract escrow to the LP.
-5. Cancelled or unresolved value remains in escrow until `refund-leftover` returns it to the client after closeout.
+## Contract Functions
 
-## Current status
+Public functions:
 
-InvoiceBTC is currently being developed as an MVP focused on:
-- on-chain invoice approval
-- escrow-backed repayment
-- milestone-based settlement
-- single-invoice direct funding
-- sBTC-native working capital flows on Stacks
+- `create-invoice`
+  Creates the invoice and all milestone records. The milestone face values must sum to the invoice face value, and milestone LP repayments must also sum to the invoice face value.
+- `merchant-sign-invoice`
+  Merchant signs on-chain.
+- `client-sign-invoice`
+  Client signs on-chain.
+- `fund-escrow`
+  Client deposits the full invoice face value into contract escrow.
+- `fund-milestone`
+  LP funds exactly one milestone's discounted advance amount to the merchant.
+- `submit-milestone`
+  Merchant submits completion proof for a funded milestone.
+- `approve-milestone`
+  Client confirms a submitted milestone and unlocks the next milestone.
+- `settle-milestone`
+  At invoice maturity, the funded LP claims repayment from escrow for all currently approved and unsettled milestones. Any unresolved milestones are pushed into dispute.
+- `open-dispute`
+  Merchant or client can open dispute on an overdue funded/submitted milestone.
+- `cancel-invoice`
+  Marks unresolved milestones cancelled and moves invoice to cancelled.
+- `close-invoice`
+  Closes only after all milestones are resolved. The invoice becomes `completed` only if the full face value was settled, otherwise `cancelled`.
+- `refund-leftover`
+  After close, the client can recover leftover escrow not already settled or refunded.
 
-## Test coverage
+Read-only functions:
 
-The Clarinet test suite covers:
-- valid invoice creation
-- invalid milestone totals
-- merchant and client signing
-- escrow gating and full-face-value enforcement
-- one-time LP funding
-- milestone approval before settlement
-- LP repayment from escrow
-- overdue milestone disputes
-- leftover refunds after cancellation
-- close restrictions until all milestones are resolved
+- `get-invoice`
+- `get-milestone`
+- `get-invoice-summary`
+- `get-last-invoice-id`
+- `can-fund`
+  Returns whether the invoice is in a fundable state and still within the funding deadline. It does not validate a specific milestone.
+- `can-settle`
+  Returns whether settlement is generally allowed for the invoice and milestone combination at the current block height.
+
+## Actual State Model
+
+Invoice statuses defined in the contract:
+
+- `draft`
+- `merchant-signed`
+- `client-signed`
+- `escrow-funded`
+- `active`
+- `matured`
+- `dispute`
+- `completed`
+- `cancelled`
+
+Current note on `matured`:
+
+- `matured` is defined in the contract and frontend types, but the current contract logic does not actively transition invoices into `matured`.
+- In the current MVP, an invoice typically moves from `escrow-funded` to `active`, then later to `dispute`, `completed`, or `cancelled`.
+
+Milestone statuses used by the contract:
+
+- `pending`
+- `funded`
+- `completion-submitted`
+- `approved`
+- `disputed`
+- `settled`
+- `cancelled`
+
+## Actual Funding And Settlement Flow
+
+1. Merchant creates an invoice with:
+   - client address
+   - invoice face value
+   - funding deadline
+   - maturity height
+   - milestone face values
+   - milestone discounted LP advance amounts
+   - milestone due heights
+2. Client signs on-chain.
+3. Merchant signs on-chain.
+4. Client deposits the full invoice face value into escrow with `fund-escrow`.
+5. LP funds milestone 1 only with `fund-milestone`.
+6. Merchant submits milestone 1 completion proof with `submit-milestone`.
+7. Client confirms milestone 1 with `approve-milestone`.
+8. Milestone 2 becomes eligible for LP funding.
+9. The same pattern repeats milestone by milestone.
+10. At invoice maturity, the funded LP calls `settle-milestone`.
+11. The contract repays the LP from escrow only for milestones that are approved and not yet settled.
+12. Any unresolved milestones are moved into dispute during settlement.
+13. After all milestones are resolved, merchant or client can close the invoice.
+14. After close, the client can withdraw leftover escrow with `refund-leftover`.
+
+## Validation And Enforcement In The Current Contract
+
+- only the merchant can sign as merchant or submit milestone completion
+- only the client can sign as client, deposit escrow, approve milestones, or refund leftover escrow
+- only the funded LP can settle
+- before the first milestone is funded, any non-party wallet can become the LP by funding it
+- full escrow must be deposited before any milestone funding starts
+- milestone funding is sequential
+- a later milestone cannot be funded until the previous milestone is approved or settled
+- merchant cannot submit completion for an unfunded milestone
+- client cannot confirm before merchant submission
+- duplicate funding, duplicate submission, and duplicate confirmation are blocked
+- proof hash is stored on-chain in the milestone record
+
+## Frontend Structure
+
+- `frontend/src/app/page.tsx`
+  Wallet connect, demo role switcher, invoice lookup, and high-level demo flow.
+- `frontend/src/app/invoices/new/page.tsx`
+  Merchant invoice creation screen.
+- `frontend/src/app/invoices/[id]/page.tsx`
+  Invoice detail view with role-aware milestone actions.
+- `frontend/src/lib/useWallet.ts`
+  Wallet session and demo role preference.
+- `frontend/src/lib/contract.ts`
+  Read-only Stacks API helpers and result parsing.
+- `frontend/src/lib/types.ts`
+  Frontend types and status-code mappings.
+- `frontend/src/components/StatusBadge.tsx`
+  Invoice and milestone badges.
+- `frontend/src/components/TxResult.tsx`
+  Transaction result and explorer link component.
+
+## Wallet And Role Logic
+
+- The role switcher is for demo organization only.
+- Real authority comes from the connected wallet address.
+- The frontend compares the connected wallet against the invoice `merchant`, `client`, and `lp` principals read from chain.
+- The UI only enables valid actions for that connected wallet.
+- Before an LP is assigned, a non-party wallet can fund the first milestone and become the LP for the invoice.
+
+## Public Testnet Runtime Configuration
+
+The frontend runtime is public-testnet only.
+
+Set these values in `frontend/.env.local`:
+
+```bash
+NEXT_PUBLIC_STACKS_API_BASE=https://api.testnet.hiro.so
+NEXT_PUBLIC_CONTRACT_ADDRESS=ST1YOURTESTNETADDRESS
+NEXT_PUBLIC_CONTRACT_NAME=invoicebtc
+NEXT_PUBLIC_SBTC_CONTRACT_ADDRESS=ST1YOURTESTNETTOKENADDRESS
+NEXT_PUBLIC_SBTC_CONTRACT_NAME=sbtc-token
+NEXT_PUBLIC_SBTC_TOKEN_NAME=sbtc
+NEXT_PUBLIC_EXPLORER_BASE=https://explorer.hiro.so/txid
+```
+
+Use `settings/Testnet.toml` and `DEPLOYMENT_CHECKLIST.md` for public testnet deployment and demo prep.
+
+## Local Test Harness
+
+Even though the app runtime is public-testnet only, the repo now includes local contract test artifacts again:
+
+- `contracts/mock-sbtc.clar`
+- `settings/Devnet.toml`
+- `deployments/default.simnet-plan.yaml`
+- `vitest.config.js`
+- `tests/invoicebtc.test.js`
+
+These exist only to support local contract verification. They are not used by the public testnet frontend runtime.
+
+## How To Run
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+cp .env.local.example .env.local
+npm run dev
+```
+
+Contract tests:
+
+```bash
+npm install
+npm test
+```
+
+## Current Test Coverage
+
+`tests/invoicebtc.test.js` currently covers:
+
+1. cannot fund any milestone before both signatures
+2. cannot fund any milestone before client escrow deposit
+3. can fund first milestone after signatures and escrow
+4. cannot fund second milestone before first milestone completion submission
+5. cannot fund second milestone before first milestone client confirmation
+6. merchant cannot submit completion for unfunded milestone
+7. client cannot confirm before merchant completion submission
+8. proof hash is stored correctly
+9. full staged sequence works across multiple milestones
+10. duplicate funding, submission, and confirmation are blocked
+
+## 3 Browser Profile Demo
+
+- Profile 1: Merchant wallet
+- Profile 2: Client wallet
+- Profile 3: LP wallet
+
+Demo sequence:
+
+1. Merchant creates an invoice with milestones.
+2. Client signs.
+3. Merchant signs.
+4. Client deposits full escrow.
+5. LP funds milestone 1.
+6. Merchant submits proof for milestone 1.
+7. Client confirms milestone 1.
+8. LP funds the next unlocked milestone.
+9. Repeat until maturity.
+10. LP settles approved milestones from escrow.
+11. If any milestones remain unresolved at settlement, the invoice moves into dispute for those unresolved portions.
+
+## Migration Notes
+
+- LP funding is now milestone-by-milestone instead of one upfront discounted invoice funding call.
+- Invoice storage now tracks `total-lp-advanced`.
+- The invoice detail UI now renders milestone-stage LP funding, merchant submission, and client confirmation actions.
+- The repo includes local-only Clarinet test support again, while the frontend runtime remains public-testnet only.

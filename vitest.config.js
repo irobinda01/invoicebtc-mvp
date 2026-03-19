@@ -1,13 +1,23 @@
-import { defineConfig } from "vitest/config";
-import { getClarinetVitestsArgv, vitestSetupFilePath } from "@stacks/clarinet-sdk/vitest";
+import { defineConfig } from 'vite'
+import { getClarinetVitestsArgv, vitestSetupFilePath } from '@stacks/clarinet-sdk/vitest'
 
 export default defineConfig({
   test: {
-    environment: "clarinet",
-    environmentOptions: {
-      clarinet: getClarinetVitestsArgv(),
+    environment: 'clarinet',
+    pool: 'forks',
+    poolOptions: {
+      threads: { singleThread: true },
+      forks: { singleFork: true },
     },
-    include: ["tests/**/*.test.ts"],
+    globals: true,
+    include: ['tests/**/*.test.js'],
     setupFiles: [vitestSetupFilePath],
+    environmentOptions: {
+      clarinet: {
+        ...getClarinetVitestsArgv(),
+        includeBootContracts: false,
+        bootContractsPath: '',
+      },
+    },
   },
-});
+})

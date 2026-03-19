@@ -1,4 +1,4 @@
-;; Minimal sBTC-style SIP-010 helper for local testing.
+;; Test-only SIP-010 token used for local contract verification.
 
 (impl-trait .sip-010-trait.sip-010-trait)
 
@@ -6,7 +6,6 @@
 
 (define-constant contract-owner tx-sender)
 (define-constant err-not-authorized (err u100))
-(define-constant err-transfer-failed (err u101))
 
 (define-public (mint (amount uint) (recipient principal))
   (begin
@@ -34,8 +33,4 @@
 
 (define-read-only (get-balance (owner principal))
   (ok (ft-get-balance sbtc owner))
-)
-
-(define-read-only (get-total-supply)
-  (ok (ft-get-supply sbtc))
 )
