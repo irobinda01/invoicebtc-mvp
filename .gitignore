@@ -1,3 +1,17 @@
 node_modules/
 .cache/
 _clarinet_probe/
+.DS_Store
+*.log
+*.tmp
+
+frontend/node_modules/
+frontend/.next/
+frontend/.vercel/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+frontend/.env.local
+frontend/.env.*.local
+
+.clarinet/
+deployments/

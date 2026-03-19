@@ -2,22 +2,28 @@
 
 (define-constant contract-self (as-contract tx-sender))
 
+(use-trait sip-010-token .sip-010-trait.sip-010-trait)
+
 (define-constant invoice-draft u0)
 (define-constant invoice-merchant-signed u1)
 (define-constant invoice-client-signed u2)
 (define-constant invoice-escrow-funded u3)
-(define-constant invoice-funded-by-lp u4)
-(define-constant invoice-active u5)
+(define-constant invoice-active u4)
+(define-constant invoice-funded-by-lp invoice-active)
+(define-constant invoice-matured u5)
 (define-constant invoice-dispute u6)
 (define-constant invoice-completed u7)
 (define-constant invoice-cancelled u8)
 
 (define-constant milestone-pending u0)
-(define-constant milestone-merchant-requested u1)
-(define-constant milestone-approved u2)
-(define-constant milestone-repaid-to-lp u3)
+(define-constant milestone-funded u1)
+(define-constant milestone-completion-submitted u2)
+(define-constant milestone-merchant-requested milestone-completion-submitted)
+(define-constant milestone-approved u3)
 (define-constant milestone-disputed u4)
-(define-constant milestone-cancelled u5)
+(define-constant milestone-settled u5)
+(define-constant milestone-repaid-to-lp milestone-settled)
+(define-constant milestone-cancelled u6)
 
 (define-constant err-not-found (err u100))
 (define-constant err-not-merchant (err u101))
@@ -37,6 +43,7 @@
 (define-constant err-deadline-invalid (err u115))
 (define-constant err-transfer-failed (err u116))
 (define-constant err-close-blocked (err u117))
+(define-constant err-not-lp (err u118))
 
 (define-data-var next-invoice-id uint u0)
 
@@ -56,6 +63,7 @@
     merchant-signed: bool,
     client-signed: bool,
     milestone-count: uint,
+    total-lp-advanced: uint,
     total-escrowed: uint,
     total-settled: uint,
     total-refunded: uint
@@ -93,6 +101,7 @@
       lp: (get lp invoice),
       face-value: (get face-value invoice),
       total-lp-funding: (get total-lp-funding invoice),
+      total-lp-advanced: (get total-lp-advanced invoice),
       total-escrowed: (get total-escrowed invoice),
       total-settled: (get total-settled invoice),
       total-refunded: (get total-refunded invoice),
@@ -102,13 +111,20 @@
   )
 )
 
+(define-read-only (get-last-invoice-id)
+  (var-get next-invoice-id)
+)
+
 (define-read-only (can-fund (invoice-id uint))
   (match (map-get? invoices invoice-id)
     invoice
     (ok
       (and
-        (is-eq (get status invoice) invoice-escrow-funded)
-        (is-none (get lp invoice))
+        (or
+          (is-eq (get status invoice) invoice-escrow-funded)
+          (is-eq (get status invoice) invoice-active)
+        )
+        (is-eq (get total-escrowed invoice) (get face-value invoice))
         (<= block-height (get funding-deadline invoice))
       )
     )
@@ -132,7 +148,14 @@
               (is-eq (get status invoice) invoice-active)
             )
             (is-some (get lp invoice))
-            (is-eq (get state milestone) milestone-approved)
+            (<= (get maturity-height invoice) block-height)
+            (< (get total-settled invoice) (get face-value invoice))
+            (not
+              (or
+                (is-eq (get state milestone) milestone-repaid-to-lp)
+                (is-eq (get state milestone) milestone-cancelled)
+              )
+            )
           )
         )
         err-not-found
@@ -187,6 +210,21 @@
           (is-eq tx-sender (get client invoice))
         )
         err-not-party
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-private (assert-lp (invoice-id uint))
+  (let ((invoice (try! (get-existing-invoice invoice-id))))
+    (begin
+      (asserts!
+        (match (get lp invoice)
+          lp-principal (is-eq tx-sender lp-principal)
+          false
+        )
+        err-not-lp
       )
       (ok true)
     )
@@ -282,9 +320,118 @@
   )
 )
 
-(define-private (transfer-sbtc (amount uint) (sender principal) (recipient principal))
+(define-private (milestone-approved-or-settled-at (invoice-id uint) (index uint) (count uint))
+  (if (>= index count)
+    true
+    (match (map-get? milestones { invoice-id: invoice-id, milestone-id: (+ index u1) })
+      milestone
+      (or
+        (is-eq (get state milestone) milestone-approved)
+        (is-eq (get state milestone) milestone-repaid-to-lp)
+      )
+      false
+    )
+  )
+)
+
+(define-private (previous-milestone-cleared (invoice-id uint) (milestone-id uint))
+  (if (is-eq milestone-id u1)
+    true
+    (match (map-get? milestones { invoice-id: invoice-id, milestone-id: (- milestone-id u1) })
+      milestone
+      (or
+        (is-eq (get state milestone) milestone-approved)
+        (is-eq (get state milestone) milestone-settled)
+      )
+      false
+    )
+  )
+)
+
+(define-private (approved-unsettled-repayment-at (invoice-id uint) (index uint) (count uint))
+  (if (>= index count)
+    u0
+    (match (map-get? milestones { invoice-id: invoice-id, milestone-id: (+ index u1) })
+      milestone
+      (if (is-eq (get state milestone) milestone-approved)
+        (get lp-repayment-amount milestone)
+        u0
+      )
+      u0
+    )
+  )
+)
+
+(define-private (milestone-needs-dispute-at (invoice-id uint) (index uint) (count uint))
+  (if (>= index count)
+    false
+    (match (map-get? milestones { invoice-id: invoice-id, milestone-id: (+ index u1) })
+      milestone
+      (or
+        (is-eq (get state milestone) milestone-pending)
+        (is-eq (get state milestone) milestone-funded)
+        (is-eq (get state milestone) milestone-completion-submitted)
+        (is-eq (get state milestone) milestone-cancelled)
+        (is-eq (get state milestone) milestone-disputed)
+      )
+      false
+    )
+  )
+)
+
+(define-private (settle-approved-milestone-at (invoice-id uint) (index uint) (count uint))
+  (if (>= index count)
+    (ok true)
+    (let (
+        (milestone-id (+ index u1))
+        (milestone (try! (get-existing-milestone invoice-id (+ index u1))))
+      )
+      (begin
+        (if (is-eq (get state milestone) milestone-approved)
+          (map-set milestones
+            { invoice-id: invoice-id, milestone-id: milestone-id }
+            (merge milestone { state: milestone-repaid-to-lp })
+          )
+          true
+        )
+        (ok true)
+      )
+    )
+  )
+)
+
+(define-private (dispute-unapproved-milestone-at (invoice-id uint) (index uint) (count uint))
+  (if (>= index count)
+    (ok true)
+    (let (
+        (milestone-id (+ index u1))
+        (milestone (try! (get-existing-milestone invoice-id (+ index u1))))
+        (state (get state milestone))
+      )
+      (begin
+        (if
+          (or
+            (is-eq state milestone-pending)
+            (is-eq state milestone-funded)
+            (is-eq state milestone-completion-submitted)
+            (is-eq state milestone-cancelled)
+            (is-eq state milestone-disputed)
+          )
+          (map-set milestones
+            { invoice-id: invoice-id, milestone-id: milestone-id }
+            (merge milestone { state: milestone-disputed })
+          )
+          true
+        )
+        (ok true)
+      )
+    )
+  )
+)
+
+(define-private (transfer-sbtc (token-contract <sip-010-token>) (amount uint) (sender principal) (recipient principal))
   (begin
-    (unwrap! (contract-call? .mock-sbtc transfer amount sender recipient none) err-transfer-failed)
+    (unwrap! (contract-call? token-contract transfer amount sender recipient none) err-transfer-failed)
     (ok true)
   )
 )
@@ -352,6 +499,7 @@
           merchant-signed: false,
           client-signed: false,
           milestone-count: milestone-count,
+          total-lp-advanced: u0,
           total-escrowed: u0,
           total-settled: u0,
           total-refunded: u0
@@ -415,7 +563,7 @@
   )
 )
 
-(define-public (fund-escrow (invoice-id uint) (amount uint))
+(define-public (fund-escrow (token-contract <sip-010-token>) (invoice-id uint) (amount uint))
   (let ((invoice (try! (get-existing-invoice invoice-id))))
     (begin
       (try! (assert-client invoice-id))
@@ -430,7 +578,7 @@
       )
       (asserts! (is-eq (get total-escrowed invoice) u0) err-invalid-funding)
       (asserts! (is-eq amount (get face-value invoice)) err-invalid-funding)
-      (try! (transfer-sbtc amount tx-sender contract-self))
+      (try! (transfer-sbtc token-contract amount tx-sender contract-self))
       (map-set invoices invoice-id
         (merge invoice
           {
@@ -444,23 +592,47 @@
   )
 )
 
-(define-public (fund-invoice (invoice-id uint) (amount uint))
+(define-public (fund-milestone (token-contract <sip-010-token>) (invoice-id uint) (milestone-id uint))
   (let ((invoice (try! (get-existing-invoice invoice-id))))
-    (begin
-      (asserts! (is-eq (get status invoice) invoice-escrow-funded) err-invalid-state)
-      (asserts! (is-none (get lp invoice)) err-already-funded)
-      (asserts! (<= block-height (get funding-deadline invoice)) err-deadline-passed)
-      (asserts! (is-eq amount (get total-lp-funding invoice)) err-invalid-funding)
-      (try! (transfer-sbtc amount tx-sender (get merchant invoice)))
-      (map-set invoices invoice-id
-        (merge invoice
-          {
-            lp: (some tx-sender),
-            status: invoice-funded-by-lp
-          }
-        )
+    (let (
+        (milestone (try! (get-existing-milestone invoice-id milestone-id)))
+        (advance-amount (get merchant-payout-amount milestone))
       )
-      (ok true)
+      (begin
+        (asserts!
+          (or
+            (is-eq (get status invoice) invoice-escrow-funded)
+            (is-eq (get status invoice) invoice-active)
+          )
+          err-invalid-state
+        )
+        (asserts! (<= block-height (get funding-deadline invoice)) err-deadline-passed)
+        (asserts! (is-eq (get total-escrowed invoice) (get face-value invoice)) err-invalid-state)
+        (asserts! (is-eq (get state milestone) milestone-pending) err-invalid-milestone-state)
+        (asserts! (previous-milestone-cleared invoice-id milestone-id) err-invalid-state)
+        (asserts!
+          (if (is-none (get lp invoice))
+            true
+            (match (get lp invoice) existing-lp (is-eq existing-lp tx-sender) false)
+          )
+          err-not-lp
+        )
+        (try! (transfer-sbtc token-contract advance-amount tx-sender (get merchant invoice)))
+        (map-set milestones
+          { invoice-id: invoice-id, milestone-id: milestone-id }
+          (merge milestone { state: milestone-funded })
+        )
+        (map-set invoices invoice-id
+          (merge invoice
+            {
+              lp: (some tx-sender),
+              total-lp-advanced: (+ (get total-lp-advanced invoice) advance-amount),
+              status: invoice-active
+            }
+          )
+        )
+        (ok advance-amount)
+      )
     )
   )
 )
@@ -472,25 +644,19 @@
     )
     (begin
       (try! (assert-merchant invoice-id))
+      (asserts! (is-eq (get state milestone) milestone-funded) err-invalid-milestone-state)
       (asserts!
-        (or
-          (is-eq (get status invoice) invoice-funded-by-lp)
-          (is-eq (get status invoice) invoice-active)
-        )
+        (is-eq (get status invoice) invoice-active)
         err-invalid-state
       )
-      (asserts! (is-eq (get state milestone) milestone-pending) err-invalid-milestone-state)
       (map-set milestones
         { invoice-id: invoice-id, milestone-id: milestone-id }
         (merge milestone
           {
             proof-hash: (some proof-hash),
-            state: milestone-merchant-requested
+            state: milestone-completion-submitted
           }
         )
-      )
-      (map-set invoices invoice-id
-        (merge invoice { status: invoice-active })
       )
       (ok true)
     )
@@ -505,33 +671,93 @@
     (begin
       (try! (assert-client invoice-id))
       (asserts!
-        (or
-          (is-eq (get status invoice) invoice-funded-by-lp)
-          (is-eq (get status invoice) invoice-active)
-        )
+        (is-eq (get status invoice) invoice-active)
         err-invalid-state
       )
-      (asserts! (is-eq (get state milestone) milestone-merchant-requested) err-invalid-milestone-state)
+      (asserts! (is-eq (get state milestone) milestone-completion-submitted) err-invalid-milestone-state)
       (map-set milestones
         { invoice-id: invoice-id, milestone-id: milestone-id }
         (merge milestone { state: milestone-approved })
-      )
-      (map-set invoices invoice-id
-        (merge invoice { status: invoice-active })
       )
       (ok true)
     )
   )
 )
 
-(define-public (settle-milestone (invoice-id uint) (milestone-id uint))
+(define-public (settle-milestone (token-contract <sip-010-token>) (invoice-id uint) (milestone-id uint))
   (let (
       (invoice (try! (get-existing-invoice invoice-id)))
       (milestone (try! (get-existing-milestone invoice-id milestone-id)))
       (lp (unwrap! (get lp invoice) err-not-lp-funded))
-      (repayment (get lp-repayment-amount milestone))
+      (approved-repayment
+        (+
+          (approved-unsettled-repayment-at invoice-id u0 (get milestone-count invoice))
+          (+ (approved-unsettled-repayment-at invoice-id u1 (get milestone-count invoice))
+            (+ (approved-unsettled-repayment-at invoice-id u2 (get milestone-count invoice))
+              (+ (approved-unsettled-repayment-at invoice-id u3 (get milestone-count invoice))
+                (+ (approved-unsettled-repayment-at invoice-id u4 (get milestone-count invoice))
+                  (+ (approved-unsettled-repayment-at invoice-id u5 (get milestone-count invoice))
+                    (+ (approved-unsettled-repayment-at invoice-id u6 (get milestone-count invoice))
+                      (+ (approved-unsettled-repayment-at invoice-id u7 (get milestone-count invoice))
+                        (+ (approved-unsettled-repayment-at invoice-id u8 (get milestone-count invoice))
+                          (+ (approved-unsettled-repayment-at invoice-id u9 (get milestone-count invoice))
+                            (+ (approved-unsettled-repayment-at invoice-id u10 (get milestone-count invoice))
+                              (+ (approved-unsettled-repayment-at invoice-id u11 (get milestone-count invoice))
+                                (+ (approved-unsettled-repayment-at invoice-id u12 (get milestone-count invoice))
+                                  (+ (approved-unsettled-repayment-at invoice-id u13 (get milestone-count invoice))
+                                    (+ (approved-unsettled-repayment-at invoice-id u14 (get milestone-count invoice))
+                                      (+ (approved-unsettled-repayment-at invoice-id u15 (get milestone-count invoice))
+                                        (+ (approved-unsettled-repayment-at invoice-id u16 (get milestone-count invoice))
+                                          (+ (approved-unsettled-repayment-at invoice-id u17 (get milestone-count invoice))
+                                            (+ (approved-unsettled-repayment-at invoice-id u18 (get milestone-count invoice))
+                                              (approved-unsettled-repayment-at invoice-id u19 (get milestone-count invoice))
+                                            )
+                                          )
+                                        )
+                                      )
+                                    )
+                                  )
+                                )
+                              )
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+      (has-unapproved
+        (or
+          (milestone-needs-dispute-at invoice-id u0 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u1 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u2 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u3 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u4 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u5 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u6 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u7 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u8 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u9 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u10 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u11 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u12 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u13 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u14 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u15 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u16 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u17 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u18 (get milestone-count invoice))
+          (milestone-needs-dispute-at invoice-id u19 (get milestone-count invoice))
+        )
+      )
     )
     (begin
+      (try! (assert-lp invoice-id))
       (asserts!
         (or
           (is-eq (get status invoice) invoice-funded-by-lp)
@@ -539,21 +765,67 @@
         )
         err-invalid-state
       )
-      (asserts! (is-eq (get state milestone) milestone-approved) err-invalid-milestone-state)
-      (try! (transfer-sbtc repayment contract-self lp))
-      (map-set milestones
-        { invoice-id: invoice-id, milestone-id: milestone-id }
-        (merge milestone { state: milestone-repaid-to-lp })
+      milestone
+      (asserts! (<= (get maturity-height invoice) block-height) err-too-early)
+      (if (> approved-repayment u0)
+        (try! (transfer-sbtc token-contract approved-repayment contract-self lp))
+        true
+      )
+      (try! (settle-approved-milestone-at invoice-id u0 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u1 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u2 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u3 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u4 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u5 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u6 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u7 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u8 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u9 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u10 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u11 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u12 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u13 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u14 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u15 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u16 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u17 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u18 (get milestone-count invoice)))
+      (try! (settle-approved-milestone-at invoice-id u19 (get milestone-count invoice)))
+      (if has-unapproved
+        (begin
+          (try! (dispute-unapproved-milestone-at invoice-id u0 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u1 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u2 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u3 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u4 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u5 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u6 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u7 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u8 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u9 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u10 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u11 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u12 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u13 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u14 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u15 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u16 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u17 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u18 (get milestone-count invoice)))
+          (try! (dispute-unapproved-milestone-at invoice-id u19 (get milestone-count invoice)))
+          true
+        )
+        true
       )
       (map-set invoices invoice-id
         (merge invoice
           {
-            total-settled: (+ (get total-settled invoice) repayment),
-            status: invoice-active
+            total-settled: (+ (get total-settled invoice) approved-repayment),
+            status: (if has-unapproved invoice-dispute invoice-active)
           }
         )
       )
-      (ok repayment)
+      (ok approved-repayment)
     )
   )
 )
@@ -575,8 +847,8 @@
       )
       (asserts!
         (or
-          (is-eq (get state milestone) milestone-pending)
-          (is-eq (get state milestone) milestone-merchant-requested)
+          (is-eq (get state milestone) milestone-funded)
+          (is-eq (get state milestone) milestone-completion-submitted)
         )
         err-invalid-milestone-state
       )
@@ -634,7 +906,7 @@
   )
 )
 
-(define-public (refund-leftover (invoice-id uint))
+(define-public (refund-leftover (token-contract <sip-010-token>) (invoice-id uint))
   (let (
       (invoice (try! (get-existing-invoice invoice-id)))
       (available (- (- (get total-escrowed invoice) (get total-settled invoice)) (get total-refunded invoice)))
@@ -649,7 +921,7 @@
         err-invalid-state
       )
       (asserts! (> available u0) err-no-leftover)
-      (try! (transfer-sbtc available contract-self tx-sender))
+      (try! (transfer-sbtc token-contract available contract-self tx-sender))
       (map-set invoices invoice-id
         (merge invoice { total-refunded: (+ (get total-refunded invoice) available) })
       )
