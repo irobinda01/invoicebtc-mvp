@@ -91,26 +91,45 @@ async function callContract(opts: {
   opts.onFinish(result.txid)
 }
 
-function getNextStep(inv: Invoice, nextFundableMilestone: Milestone | null) {
+function getNextStep(
+  inv: Invoice,
+  milestones: Milestone[],
+  nextFundableMilestone: Milestone | null,
+): { title: string; body: string; actor: string | null } {
   switch (inv.status) {
     case 'draft':
-      return { title: 'Awaiting signatures', body: 'Client and merchant signatures are required before escrow can be funded.' }
+      return { title: 'Awaiting signatures', body: 'Both the merchant and client must sign the invoice before escrow can be deposited.', actor: null }
     case 'merchant-signed':
-      return { title: 'Client signature required', body: 'The merchant has signed. The client should sign next.' }
+      return { title: 'Client signature required', body: 'The merchant has signed. The client should sign next.', actor: 'Client' }
     case 'client-signed':
-      return { title: 'Escrow funding required', body: 'Both parties have signed. The client should now deposit the full escrow amount.' }
-    case 'escrow-funded':
-      return { title: `Milestone ${nextFundableMilestone?.id ?? 1} can be funded`, body: 'Escrow is live and the next eligible milestone is open for Liquidity Provider funding.' }
-    case 'active':
-      return { title: 'Milestones progress sequentially', body: 'Liquidity Provider funding, merchant proof, client approval, and settlement happen in order.' }
+      // client-signed status can mean only-client-signed OR both-signed (needs escrow)
+      if (!inv.merchantSigned)
+        return { title: 'Merchant signature required', body: 'The client has signed. The merchant should sign to complete the dual-signature requirement.', actor: 'Merchant' }
+      return { title: 'Escrow deposit required', body: 'Both parties have signed. The client should now deposit the full invoice face value into escrow.', actor: 'Client' }
+    case 'escrow-funded': {
+      const n = nextFundableMilestone?.id ?? 1
+      return { title: `Fund Milestone ${n}`, body: `Escrow is live. The Liquidity Provider can now advance payment for Milestone ${n} to the merchant.`, actor: 'Liquidity Provider' }
+    }
+    case 'active': {
+      // Priority: approval > proof submission > LP funding
+      const submitted = milestones.find(m => m.status === 'submitted')
+      if (submitted)
+        return { title: `Approve Milestone ${submitted.id}`, body: `The merchant submitted proof for Milestone ${submitted.id}. The client should review and approve it to unlock the next funding step.`, actor: 'Client' }
+      const funded = milestones.find(m => m.status === 'funded')
+      if (funded)
+        return { title: `Submit Milestone ${funded.id} Completion`, body: `Milestone ${funded.id} has been LP-funded. The merchant should complete the work and submit a proof reference on-chain.`, actor: 'Merchant' }
+      if (nextFundableMilestone)
+        return { title: `Fund Milestone ${nextFundableMilestone.id}`, body: `The previous milestone was approved. The Liquidity Provider can now advance payment for Milestone ${nextFundableMilestone.id}.`, actor: 'Liquidity Provider' }
+      return { title: 'All milestones progressing', body: 'All milestones are either approved or awaiting final resolution.', actor: null }
+    }
     case 'matured':
-      return { title: 'Settlement window is open', body: 'The invoice has reached maturity. The Liquidity Provider can settle approved milestones.' }
+      return { title: 'Settlement window is open', body: 'The invoice has reached maturity. The Liquidity Provider can settle approved milestones from escrow.', actor: 'Liquidity Provider' }
     case 'dispute':
-      return { title: 'Invoice is in dispute', body: 'At least one milestone remains unresolved and needs review.' }
+      return { title: 'Invoice is in dispute', body: 'At least one milestone remains unresolved and needs review.', actor: null }
     case 'completed':
-      return { title: 'Invoice completed', body: 'Approved milestones are settled. Any leftover escrow can now be refunded.' }
+      return { title: 'Invoice completed', body: 'Approved milestones are settled. Any leftover escrow can now be refunded to the client.', actor: 'Client' }
     case 'cancelled':
-      return { title: 'Invoice cancelled', body: 'Open milestone obligations were cancelled. Remaining escrow may still be recoverable.' }
+      return { title: 'Invoice cancelled', body: 'Open milestone obligations were cancelled. Remaining escrow may still be recoverable.', actor: null }
   }
 }
 
@@ -126,7 +145,6 @@ export default function InvoiceDetailPage() {
   const [loadError, setLoadError] = useState('')
   const [currentBlock, setCurrentBlock] = useState(0)
   const [pendingConfirmation, setPendingConfirmation] = useState(false)
-  const [canFundLive, setCanFundLive] = useState(false)
   const [settlementEligibleMilestones, setSettlementEligibleMilestones] = useState<number[]>([])
   const [lastUpdated, setLastUpdated] = useState('')
 
@@ -160,7 +178,6 @@ export default function InvoiceDetailPage() {
       ])
       setInvoice(inv)
       setMilestones(milestoneRows)
-      setCanFundLive(readiness.canFund)
       setSettlementEligibleMilestones(readiness.settlementEligibleMilestones)
       setCurrentBlock(chainInfo?.stacksTipHeight ?? chainInfo?.burnBlockHeight ?? 0)
       setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
@@ -185,9 +202,10 @@ export default function InvoiceDetailPage() {
 
   const role: Role = useMemo(() => {
     if (!address || !invoice) return 'observer'
-    if (address === invoice.merchant) return 'merchant'
-    if (address === invoice.client) return 'client'
-    if (invoice.lp && address === invoice.lp) return 'lp'
+    const addr = address.toUpperCase()
+    if (addr === invoice.merchant?.toUpperCase()) return 'merchant'
+    if (addr === invoice.client?.toUpperCase()) return 'client'
+    if (invoice.lp && addr === invoice.lp.toUpperCase()) return 'lp'
     return 'observer'
   }, [address, invoice])
 
@@ -243,10 +261,22 @@ export default function InvoiceDetailPage() {
   }
 
   const inv = invoice
+  // Derived locally from invoice state — independent of the deployed contract's can-fund read-only
+  const canFundLive = ['escrow-funded', 'active'].includes(inv.status) && inv.totalEscrowed >= inv.faceValue
   const isMerchant = role === 'merchant'
   const isClient = role === 'client'
   const isLp = role === 'lp'
   const isParty = isMerchant || isClient
+  // Allow an observer who selected LP role to act as LP when no LP is designated yet
+  const canActAsLp = isLp || (selectedRole === 'lp' && !inv.lp && !isParty)
+  // For display: promote an eligible observer-as-LP to show LP role badge/hints
+  const effectiveRole: Role = (canActAsLp && !isLp) ? 'lp' : role
+  // Roles the wallet may NOT select for this invoice
+  const disabledRoles: Role[] = isParty
+    ? ['lp']
+    : (!isLp && !!inv.lp)
+      ? ['lp']
+      : []
 
   const nextFundableMilestone =
     milestones.find((milestone, index) => {
@@ -260,15 +290,15 @@ export default function InvoiceDetailPage() {
     isMerchant && !inv.merchantSigned && ['draft', 'client-signed', 'merchant-signed'].includes(inv.status) ? 'Merchant sign invoice' : null,
     isClient && !inv.clientSigned && ['draft', 'merchant-signed', 'client-signed'].includes(inv.status) ? 'Client sign invoice' : null,
     isClient && inv.merchantSigned && inv.clientSigned && ['merchant-signed', 'client-signed'].includes(inv.status) ? 'Deposit full escrow' : null,
-    !isParty && (inv.lp ? isLp : true) && nextFundableMilestone ? `Fund milestone ${nextFundableMilestone.id}` : null,
+    canActAsLp && nextFundableMilestone ? `Fund milestone ${nextFundableMilestone.id}` : null,
     ...milestones.flatMap((milestone) => [
       isMerchant && milestone.status === 'funded' ? `Submit completion for milestone ${milestone.id}` : null,
       isClient && milestone.status === 'submitted' ? `Approve milestone ${milestone.id}` : null,
     ]),
-    isLp && !!inv.lp && settlementEligibleMilestones.length > 0 ? 'Settle approved milestones' : null,
+    canActAsLp && !!inv.lp && settlementEligibleMilestones.length > 0 ? 'Settle approved milestones' : null,
   ].filter(Boolean) as string[]
   const leftoverAmount = inv.totalEscrowed - inv.totalSettled - inv.totalRefunded
-  const nextStep = getNextStep(inv, nextFundableMilestone)
+  const nextStep = getNextStep(inv, milestones, nextFundableMilestone)
 
   // Timing display — Stacks produces ~1 block per 10 minutes
   const BLOCKS_PER_HOUR = 6
@@ -277,11 +307,17 @@ export default function InvoiceDetailPage() {
   const fundingBlocksLeft = showFundingWindow ? inv.fundingDeadline - currentBlock : null
   const fundingHoursLeft = fundingBlocksLeft !== null ? Math.max(0, Math.round(fundingBlocksLeft / BLOCKS_PER_HOUR)) : null
   const fundingWindowClosed = fundingBlocksLeft !== null && fundingBlocksLeft <= 0
-  const showSettlementPeriod = ['active', 'matured', 'dispute', 'completed'].includes(inv.status) && currentBlock > 0 && inv.fundingDeadline > 0 && inv.maturityHeight > 0
-  const settlementElapsedBlocks = showSettlementPeriod ? Math.max(0, currentBlock - inv.fundingDeadline) : null
-  const settlementDaysSinceFunding = settlementElapsedBlocks !== null ? Math.floor(settlementElapsedBlocks / BLOCKS_PER_DAY) : null
-  const settlementHoursSinceFunding = settlementElapsedBlocks !== null ? Math.floor((settlementElapsedBlocks % BLOCKS_PER_DAY) / BLOCKS_PER_HOUR) : null
-  const settlementTotalDays = showSettlementPeriod ? Math.max(1, Math.round((inv.maturityHeight - inv.fundingDeadline) / BLOCKS_PER_DAY)) : null
+  const showSettlementPeriod = ['escrow-funded', 'active', 'matured', 'dispute', 'completed'].includes(inv.status) && currentBlock > 0 && inv.maturityHeight > 0 && inv.fundingDeadline > 0
+  const settlementTotalBlocks = showSettlementPeriod ? inv.maturityHeight - inv.fundingDeadline : null
+  const settlementBlocksLeft = showSettlementPeriod ? inv.maturityHeight - currentBlock : null
+  const settlementOpen = settlementBlocksLeft !== null && settlementBlocksLeft <= 0
+  const settlementDaysLeft = settlementBlocksLeft !== null && settlementBlocksLeft > 0 ? Math.floor(settlementBlocksLeft / BLOCKS_PER_DAY) : null
+  const settlementHoursLeft = settlementBlocksLeft !== null && settlementBlocksLeft > 0 ? Math.floor((settlementBlocksLeft % BLOCKS_PER_DAY) / BLOCKS_PER_HOUR) : null
+  const settlementMinsLeft = settlementBlocksLeft !== null && settlementBlocksLeft > 0 ? (settlementBlocksLeft % BLOCKS_PER_HOUR) * 10 : null
+  const settlementTotalDays = settlementTotalBlocks !== null ? Math.max(1, Math.round(settlementTotalBlocks / BLOCKS_PER_DAY)) : null
+  const settlementEstimatedDate = settlementTotalBlocks !== null
+    ? new Date(Date.now() + (settlementBlocksLeft ?? 0) * 10 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    : null
 
   async function doMerchantSign() {
     const { uintCV } = await import('@stacks/transactions')
@@ -315,11 +351,10 @@ export default function InvoiceDetailPage() {
   }
 
   async function doFundMilestone(milestone: Milestone) {
-    const { createAssetInfo, FungibleConditionCode, makeStandardFungiblePostCondition, uintCV } = await import('@stacks/transactions')
+    const { uintCV } = await import('@stacks/transactions')
     fundMilestone.start()
     try {
-      const postCondition = makeStandardFungiblePostCondition(address!, FungibleConditionCode.Equal, milestone.merchantPayoutAmount, createAssetInfo(SBTC_CONTRACT_ADDRESS, SBTC_CONTRACT_NAME, SBTC_TOKEN_NAME))
-      await callContract({ functionName: 'fund-milestone', functionArgs: [uintCV(invoiceId), uintCV(milestone.id)], postConditions: [postCondition], requestContractCall, onFinish: (txId) => { fundMilestone.done(txId, { onConfirmed: refresh }) } })
+      await callContract({ functionName: 'fund-milestone', functionArgs: [uintCV(invoiceId), uintCV(milestone.id)], postConditions: [], postConditionMode: 'allow', requestContractCall, onFinish: (txId) => { fundMilestone.done(txId, { onConfirmed: refresh }) } })
     } catch (error) {
       fundMilestone.fail(normalizeWalletError(error))
     }
@@ -412,7 +447,7 @@ export default function InvoiceDetailPage() {
             <Link href="/" className="text-sm text-[var(--text-muted)] transition hover:text-white">Back to overview</Link>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <StatusBadge status={inv.status} />
-              <RoleBadge role={role} />
+              <RoleBadge role={effectiveRole} />
             </div>
             <h1 className="mt-5 text-balance text-4xl font-semibold tracking-[-0.04em] text-white sm:text-5xl">Invoice #{invoiceId}</h1>
             <p className="mt-4 max-w-2xl text-lg leading-8 text-[var(--text-secondary)]">
@@ -422,16 +457,21 @@ export default function InvoiceDetailPage() {
               <div className="mt-5 flex flex-wrap gap-3">
                 {showFundingWindow && fundingHoursLeft !== null && (
                   <div className="flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm">
-                    <span className={cn('h-1.5 w-1.5 flex-none rounded-full', fundingWindowClosed ? 'bg-[#c85e63]' : 'bg-[var(--accent)]')} />
+                    <span className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--accent)]" />
                     <span className="text-[var(--text-muted)]">Funding window</span>
-                    <span className="font-medium text-white">{fundingWindowClosed ? 'Closed' : `${fundingHoursLeft}h remaining`}</span>
+                    {/* MVP: deadline is informational only — funding remains open */}
+                    <span className="font-medium text-white">{fundingWindowClosed ? 'Open · MVP' : `${fundingHoursLeft}h remaining`}</span>
                   </div>
                 )}
-                {showSettlementPeriod && settlementDaysSinceFunding !== null && settlementHoursSinceFunding !== null && settlementTotalDays !== null && (
+                {showSettlementPeriod && (
                   <div className="flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm">
-                    <span className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--success)]" />
-                    <span className="text-[var(--text-muted)]">Settlement period</span>
-                    <span className="font-medium text-white">Day {settlementDaysSinceFunding}, {settlementHoursSinceFunding}h of {settlementTotalDays}</span>
+                    <span className={cn('h-1.5 w-1.5 flex-none rounded-full', settlementOpen ? 'bg-[var(--success)]' : 'bg-[var(--accent)]')} />
+                    <span className="text-[var(--text-muted)]">LP settlement</span>
+                    <span className="font-medium text-white">
+                      {settlementOpen
+                        ? `Open now · ${settlementEstimatedDate} · ${settlementTotalDays}d window`
+                        : `${settlementDaysLeft}d ${settlementHoursLeft}h ${settlementMinsLeft}m remaining · ${settlementEstimatedDate} · ${settlementTotalDays}d window`}
+                    </span>
                   </div>
                 )}
               </div>
@@ -443,7 +483,7 @@ export default function InvoiceDetailPage() {
             <div className="mt-4 space-y-3">
               {/* Connected wallet with explorer link */}
               <div className="rounded-[var(--radius-md)] border border-white/8 bg-white/[0.03] p-4">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Connected wallet</p>
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Connected Leather account</p>
                 {address ? (
                   <div className="mt-2 flex items-center justify-between gap-2">
                     <p className="break-all font-mono text-xs text-white">{address}</p>
@@ -465,27 +505,37 @@ export default function InvoiceDetailPage() {
               {/* Role match hint */}
               <div className={cn(
                 'rounded-[var(--radius-md)] border p-4',
-                role === 'merchant'
+                effectiveRole === 'merchant'
                   ? 'border-[rgba(228,177,92,0.28)] bg-[rgba(228,177,92,0.08)]'
-                  : role === 'client'
+                  : effectiveRole === 'client'
                     ? 'border-[rgba(109,157,247,0.28)] bg-[rgba(109,157,247,0.08)]'
-                    : role === 'lp'
+                    : effectiveRole === 'lp'
                       ? 'border-[rgba(67,173,139,0.28)] bg-[rgba(67,173,139,0.08)]'
                       : 'border-white/8 bg-white/[0.03]',
               )}>
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Your role</p>
-                <p className="mt-2 text-sm text-white">{ROLE_DISPLAY[role]}</p>
-                {role !== 'observer' ? (
+                <p className="mt-2 text-sm text-white">{ROLE_DISPLAY[effectiveRole]}</p>
+                {effectiveRole !== 'observer' ? (
                   <p className="mt-1 text-xs text-[#a8d8c6]">
-                    Wallet matches invoice {role} — on-chain actions are unlocked.
+                    {role === effectiveRole
+                      ? `Wallet matches invoice ${role} — on-chain actions are unlocked.`
+                      : 'No LP assigned yet. Select LP role to fund this invoice and become the Liquidity Provider.'}
                   </p>
                 ) : address ? (
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">
-                    This wallet is not a named party on invoice #{invoiceId}.
-                  </p>
+                  <div className="mt-1 space-y-1.5 text-xs text-[var(--text-muted)]">
+                    {inv.lp
+                      ? <p>This invoice already has an assigned LP. Only that LP can fund remaining milestones.</p>
+                      : isParty
+                        ? <p>Wallet is {role} on this invoice — LP role is reserved for a third-party wallet.</p>
+                        : <p>Select LP role above to fund this invoice as Liquidity Provider.</p>}
+                    <p>Expected addresses:</p>
+                    <p className="break-all font-mono text-white/60">Merchant: {inv.merchant}</p>
+                    <p className="break-all font-mono text-white/60">Client: {inv.client}</p>
+                    {inv.lp && <p className="break-all font-mono text-white/60">LP: {inv.lp}</p>}
+                  </div>
                 ) : (
                   <p className="mt-1 text-xs text-[var(--text-muted)]">
-                    Connect a wallet to see your role on this invoice.
+                    Connect Leather to see your role on this invoice.
                   </p>
                 )}
               </div>
@@ -500,12 +550,12 @@ export default function InvoiceDetailPage() {
                 <div className="mt-3 grid gap-2 text-xs text-[var(--text-secondary)]">
                   <p>Current block: {currentBlock > 0 ? currentBlock : 'Syncing'}</p>
                   <p>Last refresh: {lastUpdated || 'Waiting for first successful read'}</p>
-                  <p>Funding eligibility: {canFundLive ? 'Open on-chain' : 'Not yet open'}</p>
+                  <p>Funding eligibility: {canFundLive ? 'Open' : 'Not yet open'}</p>
                 </div>
               </div>
             </div>
             <div className="mt-5">
-              <RoleSwitcher selectedRole={selectedRole} setSelectedRole={setSelectedRole} compact />
+              <RoleSwitcher selectedRole={selectedRole} setSelectedRole={setSelectedRole} disabledRoles={disabledRoles} compact />
             </div>
             {isWrongNetwork && (
               <div className="mt-5 rounded-[var(--radius-md)] border border-[rgba(200,93,99,0.28)] bg-[rgba(200,93,99,0.1)] p-4 text-sm text-[#f2c4c7]">
@@ -526,7 +576,7 @@ export default function InvoiceDetailPage() {
         </div>
         <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <MetricCard label="Live block" value={currentBlock > 0 ? `#${currentBlock}` : 'Syncing'} hint="Pulled from Stacks testnet." />
-          <MetricCard label="Funding gate" value={canFundLive ? 'Open' : 'Closed'} hint="Computed from deployed contract read-only logic." />
+          <MetricCard label="Funding gate" value={canFundLive ? 'Open' : 'Closed'} hint="Derived from invoice status and escrow balance." />
           <MetricCard label="Settlement ready" value={settlementEligibleMilestones.length > 0 ? `${settlementEligibleMilestones.length} milestone${settlementEligibleMilestones.length === 1 ? '' : 's'}` : 'None'} hint="Live eligibility from the contract." />
           <MetricCard label="Last sync" value={lastUpdated || 'Waiting'} hint="This page refreshes automatically while open." />
         </div>
@@ -540,22 +590,41 @@ export default function InvoiceDetailPage() {
             <p className="mt-3 text-base leading-7 text-[var(--text-secondary)]">{nextStep.body}</p>
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
               <div className="rounded-[var(--radius-md)] border border-white/8 bg-white/[0.03] p-4">
-                <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">What happens next</p>
-                <p className="mt-2 text-sm text-white">{availableActions[0] ?? 'No immediate on-chain action is available for the connected wallet.'}</p>
+                <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Required from</p>
+                <p className="mt-2 text-sm font-medium text-white">{nextStep.actor ?? '—'}</p>
+                {availableActions.length > 0 ? (
+                  <p className="mt-2 text-xs text-[var(--text-secondary)]">Your action: {availableActions[0]}</p>
+                ) : (
+                  <p className="mt-2 text-xs text-[var(--text-muted)]">No action required from the connected Leather account right now.</p>
+                )}
                 {settlementEligibleMilestones.length > 0 && (
                   <p className="mt-2 text-xs text-[var(--text-secondary)]">
-                    Settlement is live for milestone {settlementEligibleMilestones.join(', ')}.
+                    Settlement open for milestone {settlementEligibleMilestones.join(', ')}.
                   </p>
                 )}
               </div>
               <div className="rounded-[var(--radius-md)] border border-white/8 bg-white/[0.03] p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Your role</p>
-                <p className="mt-2 text-sm text-white">{ROLE_DISPLAY[role]}</p>
+                <p className="mt-2 text-sm text-white">{ROLE_DISPLAY[effectiveRole]}</p>
                 {currentBlock > 0 && (
                   <p className="mt-1 text-xs text-[var(--text-muted)]">Current block: {currentBlock}</p>
                 )}
               </div>
             </div>
+            {canActAsLp && nextFundableMilestone && canFundLive && (
+              <div className="mt-5 border-t border-white/8 pt-5">
+                <p className="mb-3 text-sm text-[var(--text-secondary)]">
+                  You are the eligible Liquidity Provider for this invoice. Advance{' '}
+                  <span className="font-medium text-white">{satsToBtc(nextFundableMilestone.merchantPayoutAmount)} sBTC</span>{' '}
+                  to the merchant now — after the merchant submits proof and the client approves,{' '}
+                  {nextFundableMilestone.id < milestones.length ? `Milestone ${nextFundableMilestone.id + 1}` : 'settlement'} becomes available.
+                </p>
+                <Button onClick={() => doFundMilestone(nextFundableMilestone)} disabled={fundMilestone.loading || !isReady}>
+                  {fundMilestone.loading ? 'Funding...' : `Fund Milestone ${nextFundableMilestone.id}`}
+                </Button>
+                <TxResult txId={fundMilestone.txId} error={fundMilestone.error} loading={fundMilestone.loading} stage={fundMilestone.stage} label={`Fund Milestone ${nextFundableMilestone.id}`} />
+              </div>
+            )}
           </Surface>
 
           <Surface elevated className="p-6 sm:p-8">
@@ -564,7 +633,7 @@ export default function InvoiceDetailPage() {
               <DetailRow label="Merchant" value={formatCompactAddress(inv.merchant, 10, 8)} mono />
               <DetailRow label="Client" value={formatCompactAddress(inv.client, 10, 8)} mono />
               <DetailRow label="Liquidity Provider" value={inv.lp ? formatCompactAddress(inv.lp, 10, 8) : 'Unassigned'} mono />
-              <DetailRow label="Funding closes at" value={`Block ${inv.fundingDeadline}`} />
+              <DetailRow label="Funding reference deadline" value={`Block ${inv.fundingDeadline} (informational)`} />
               <DetailRow label="Settlement opens at" value={`Block ${inv.maturityHeight}`} />
               <DetailRow label="Metadata" value={inv.metadataHash || 'Not provided'} mono />
             </div>
@@ -572,31 +641,97 @@ export default function InvoiceDetailPage() {
         </div>
       </Section>
 
-      <Section eyebrow="Lifecycle" title="Invoice state progression" description="Milestones remain easy to follow even when multiple participants interact over time.">
+      <Section eyebrow="Progress" title="Milestone funding sequence" description="The LP advances payment for each milestone in order. A milestone unlocks only after the previous one is funded, the merchant submits proof, and the client approves.">
         <Surface elevated className="p-6 sm:p-8">
-          {availableActions.length > 0 ? (
-            <div className="grid gap-3 md:grid-cols-2">
-              {availableActions.map((action) => (
-                <div key={action} className="rounded-[var(--radius-md)] border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-white">{action}</div>
-              ))}
-            </div>
+          {milestones.length === 0 ? (
+            <p className="text-sm text-[var(--text-secondary)]">Milestones will appear here once the invoice is confirmed on-chain.</p>
           ) : (
-            <p className="text-sm text-[var(--text-secondary)]">No direct on-chain action is currently available for the connected wallet. Refresh after other parties complete their step.</p>
+            <div className="space-y-2">
+              {milestones.map((m) => {
+                const isCurrent = nextFundableMilestone?.id === m.id
+                const isDone = m.status === 'approved' || m.status === 'settled'
+                const isInProgress = m.status === 'funded' || m.status === 'submitted'
+                const stateLabel =
+                  isDone ? 'Complete'
+                  : m.status === 'funded' ? 'Awaiting merchant proof'
+                  : m.status === 'submitted' ? 'Awaiting client approval'
+                  : m.status === 'cancelled' ? 'Cancelled'
+                  : isCurrent ? 'Ready to fund'
+                  : 'Locked'
+                return (
+                  <div
+                    key={m.id}
+                    className={cn(
+                      'flex items-center gap-4 rounded-[var(--radius-md)] border px-5 py-4',
+                      isDone
+                        ? 'border-[rgba(67,173,139,0.25)] bg-[rgba(67,173,139,0.06)]'
+                        : isCurrent
+                          ? 'border-[rgba(228,177,92,0.28)] bg-[rgba(228,177,92,0.07)]'
+                          : 'border-white/8 bg-white/[0.02]',
+                    )}
+                  >
+                    <div className={cn(
+                      'flex h-7 w-7 flex-none items-center justify-center rounded-full text-xs font-bold',
+                      isDone ? 'bg-[var(--success)] text-black'
+                        : isCurrent ? 'bg-[var(--accent)] text-black'
+                        : isInProgress ? 'bg-white/20 text-white'
+                        : 'bg-white/8 text-[var(--text-muted)]',
+                    )}>
+                      {isDone ? '✓' : m.id}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span className="text-sm font-semibold text-white">Milestone {m.id}</span>
+                        <MilestoneStateBadge status={m.status} />
+                        {isCurrent && !isDone && (
+                          <span className="text-xs font-medium text-[var(--accent)]">← next to fund</span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                        {satsToBtc(m.merchantPayoutAmount)} sBTC LP advance · {satsToBtc(m.faceValue)} sBTC face value
+                      </p>
+                    </div>
+                    <span className={cn(
+                      'shrink-0 text-xs',
+                      isDone ? 'text-[var(--success)]'
+                        : isInProgress ? 'text-[var(--text-secondary)]'
+                        : isCurrent ? 'text-[var(--accent)]'
+                        : 'text-[var(--text-muted)]',
+                    )}>
+                      {stateLabel}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </Surface>
       </Section>
 
       <Section eyebrow="Milestones" title="Milestone progression and operator actions" description="Each milestone is shown with its funding economics, current state, and any action that the current wallet can perform.">
         <div className="space-y-5">
-          {milestones.map((milestone) => {
+          {milestones.map((milestone, milestoneIndex) => {
             const isNextFundable = nextFundableMilestone?.id === milestone.id
-            const canFundThis = !isParty && (inv.lp ? isLp : true) && isNextFundable && canFundLive
+            const canFundThis = canActAsLp && isNextFundable && canFundLive
             const canSubmit = isMerchant && milestone.status === 'funded'
             const canApprove = isClient && milestone.status === 'submitted'
             const canDispute = isParty
               && ['escrow-funded', 'active'].includes(inv.status)
               && ['funded', 'submitted'].includes(milestone.status)
               && (currentBlock === 0 || currentBlock > milestone.dueBlockHeight)
+            // Locked state: invoice is ready for LP funding but this milestone isn't next
+            const prevMilestone = milestoneIndex > 0 ? milestones[milestoneIndex - 1] : null
+            const isLpEligibleStatus = ['escrow-funded', 'active'].includes(inv.status)
+            const isLocked = isLpEligibleStatus && milestone.status === 'pending' && !isNextFundable
+            const lockedReason = isLocked && prevMilestone
+              ? prevMilestone.status === 'pending'
+                ? `Milestone ${prevMilestone.id} must be funded first`
+                : prevMilestone.status === 'funded'
+                  ? `Waiting for merchant to submit proof on Milestone ${prevMilestone.id}`
+                  : prevMilestone.status === 'submitted'
+                    ? `Waiting for client to approve Milestone ${prevMilestone.id}`
+                    : null
+              : null
 
             return (
               <Surface key={milestone.id} elevated className="p-6 sm:p-8">
@@ -605,9 +740,12 @@ export default function InvoiceDetailPage() {
                     <div className="flex flex-wrap items-center gap-3">
                       <h3 className="text-2xl font-semibold text-white">Milestone {milestone.id}</h3>
                       <MilestoneStateBadge status={milestone.status} />
-                      {isNextFundable && <span className="rounded-full border border-[rgba(228,177,92,0.28)] bg-[rgba(228,177,92,0.14)] px-3 py-1 text-xs font-medium text-[#f3d39b]">Next eligible for Liquidity Provider funding</span>}
+                      {isNextFundable && <span className="rounded-full border border-[rgba(228,177,92,0.28)] bg-[rgba(228,177,92,0.14)] px-3 py-1 text-xs font-medium text-[#f3d39b]">Next — {satsToBtc(milestone.merchantPayoutAmount)} sBTC LP advance</span>}
                     </div>
                     <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">Delivery due by block {milestone.dueBlockHeight}. Milestones are funded sequentially — each one unlocks only after the previous is approved.</p>
+                    {lockedReason && (
+                      <p className="mt-2 text-xs text-[var(--text-muted)]">Locked — {lockedReason}.</p>
+                    )}
                   </div>
                   <div className="grid w-full gap-3 sm:grid-cols-3 lg:max-w-xl">
                     <MetricCard label="Face value" value={`${satsToBtc(milestone.faceValue)} sBTC`} />
@@ -630,8 +768,8 @@ export default function InvoiceDetailPage() {
                 {(canFundThis || canSubmit || canApprove || canDispute) && (
                   <div className="mt-6 grid gap-4 lg:grid-cols-2">
                     {canFundThis && (
-                      <ActionPanel title={`Fund milestone ${milestone.id}`} description="The Liquidity Provider advances the discounted milestone amount. Only the next unlocked milestone can be funded." disabled={false} disabledReason="" tx={fundMilestone} tone="accent">
-                        <Button onClick={() => doFundMilestone(milestone)} disabled={fundMilestone.loading || !isReady}>{fundMilestone.loading ? 'Funding...' : 'Fund milestone'}</Button>
+                      <ActionPanel title={`Fund Milestone ${milestone.id}`} description={`Advance ${satsToBtc(milestone.merchantPayoutAmount)} sBTC to the merchant now. After the merchant submits proof and the client approves, ${milestone.id < milestones.length ? `Milestone ${milestone.id + 1}` : 'settlement'} becomes available.`} disabled={false} disabledReason="" tx={fundMilestone} tone="accent">
+                        <Button onClick={() => doFundMilestone(milestone)} disabled={fundMilestone.loading || !isReady}>{fundMilestone.loading ? 'Funding...' : `Fund Milestone ${milestone.id}`}</Button>
                       </ActionPanel>
                     )}
                     {canSubmit && (
@@ -673,7 +811,10 @@ export default function InvoiceDetailPage() {
           <ActionPanel title="Deposit full escrow" description={`The client deposits the full face value of ${satsToBtc(inv.faceValue)} sBTC to reserve settlement capital.`} disabled={!(isClient && inv.merchantSigned && inv.clientSigned && ['merchant-signed', 'client-signed'].includes(inv.status))} disabledReason="Escrow becomes available only after both parties have signed." tx={fundEscrow} tone="accent">
             <Button onClick={doFundEscrow} disabled={fundEscrow.loading || !isReady}>{fundEscrow.loading ? 'Depositing...' : 'Deposit escrow'}</Button>
           </ActionPanel>
-          <ActionPanel title="Settle approved milestones" description="At maturity, the Liquidity Provider can settle approved milestones from escrow once the deployed contract marks them as ready." disabled={!(isLp && !!inv.lp && settlementEligibleMilestones.length > 0)} disabledReason="Only the assigned Liquidity Provider can settle after the contract exposes at least one live settlement-eligible milestone." tx={settleMilestone}>
+          <ActionPanel title={nextFundableMilestone ? `Fund Milestone ${nextFundableMilestone.id}` : 'Fund next milestone'} description={nextFundableMilestone ? `Advance ${satsToBtc(nextFundableMilestone.merchantPayoutAmount)} sBTC to the merchant as Liquidity Provider. After the merchant submits proof and the client approves, ${nextFundableMilestone.id < milestones.length ? `Milestone ${nextFundableMilestone.id + 1}` : 'settlement'} becomes available.` : 'No milestone is currently eligible for LP funding.'} disabled={!(canActAsLp && !!nextFundableMilestone && canFundLive)} disabledReason={!canActAsLp ? 'Select the LP role above, or connect the designated LP wallet.' : !canFundLive ? 'Funding gate is not open — check that escrow has been fully deposited.' : 'No milestone is ready to fund right now.'} tx={fundMilestone} tone="accent">
+            <Button onClick={() => nextFundableMilestone && doFundMilestone(nextFundableMilestone)} disabled={fundMilestone.loading || !isReady}>{fundMilestone.loading ? 'Funding...' : `Fund Milestone ${nextFundableMilestone?.id}`}</Button>
+          </ActionPanel>
+          <ActionPanel title="Settle approved milestones" description="At maturity, the Liquidity Provider can settle approved milestones from escrow once the deployed contract marks them as ready." disabled={!(canActAsLp && !!inv.lp && settlementEligibleMilestones.length > 0)} disabledReason="Only the assigned Liquidity Provider can settle after the contract exposes at least one live settlement-eligible milestone." tx={settleMilestone}>
             <Button onClick={doSettleMilestones} disabled={settleMilestone.loading || settlementEligibleMilestones.length === 0 || !isReady}>{settleMilestone.loading ? 'Settling...' : 'Settle approved milestones'}</Button>
           </ActionPanel>
           <ActionPanel title="Close invoice" description="The merchant or client can close the invoice once all milestones are resolved." disabled={!(isParty && !['completed', 'cancelled'].includes(inv.status))} disabledReason="Only the merchant or client can close the invoice, and all milestones must be fully resolved first." tx={closeInvoice}>

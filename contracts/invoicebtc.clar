@@ -44,6 +44,8 @@
 (define-constant err-transfer-failed (err u116))
 (define-constant err-close-blocked (err u117))
 (define-constant err-not-lp (err u118))
+(define-constant err-caller-is-merchant (err u119))
+(define-constant err-caller-is-client (err u120))
 
 (define-data-var next-invoice-id uint u0)
 
@@ -124,8 +126,8 @@
           (is-eq (get status invoice) invoice-escrow-funded)
           (is-eq (get status invoice) invoice-active)
         )
+        ;; MVP: funding window is informational only - deadline does not block funding
         (is-eq (get total-escrowed invoice) (get face-value invoice))
-        (<= stacks-block-height (get funding-deadline invoice))
       )
     )
     err-not-found
@@ -148,7 +150,7 @@
               (is-eq (get status invoice) invoice-active)
             )
             (is-some (get lp invoice))
-            (<= (get maturity-height invoice) stacks-block-height)
+            ;; MVP: maturity height is informational only - settlement allowed anytime
             (< (get total-settled invoice) (get face-value invoice))
             (not
               (or
@@ -268,8 +270,7 @@
       (begin
         (asserts! (> face-value u0) err-invalid-milestones)
         (asserts! (> merchant-payout u0) err-invalid-milestones)
-        (asserts! (> due-height stacks-block-height) err-deadline-invalid)
-        (asserts! (<= due-height maturity-height) err-deadline-invalid)
+        ;; MVP: due heights are informational only - no block height validation
         (asserts! (is-eq face-value lp-repayment) err-invalid-total)
         (map-set milestones
           { invoice-id: invoice-id, milestone-id: milestone-id }
@@ -460,8 +461,7 @@
       (asserts! (is-eq milestone-count (len milestone-merchant-payouts)) err-invalid-milestones)
       (asserts! (is-eq milestone-count (len milestone-lp-repayments)) err-invalid-milestones)
       (asserts! (is-eq milestone-count (len milestone-due-heights)) err-invalid-milestones)
-      (asserts! (> funding-deadline stacks-block-height) err-deadline-invalid)
-      (asserts! (> maturity-height funding-deadline) err-deadline-invalid)
+      ;; MVP: funding-deadline and maturity-height are informational only - no block height validation
       (asserts! (is-eq milestone-face-total face-value) err-invalid-total)
       (asserts! (is-eq lp-repayment-total face-value) err-invalid-total)
       (try! (store-milestone-at invoice-id u0 milestone-count maturity-height milestone-face-values milestone-merchant-payouts milestone-lp-repayments milestone-due-heights))
@@ -492,7 +492,7 @@
           face-value: face-value,
           total-lp-funding: merchant-payout-total,
           status: invoice-draft,
-          created-at: stacks-block-height,
+          created-at: burn-block-height,
           funding-deadline: funding-deadline,
           maturity-height: maturity-height,
           metadata-hash: metadata-hash,
@@ -606,10 +606,14 @@
           )
           err-invalid-state
         )
-        (asserts! (<= stacks-block-height (get funding-deadline invoice)) err-deadline-passed)
+        ;; MVP: funding window is informational only - deadline does not block funding
         (asserts! (is-eq (get total-escrowed invoice) (get face-value invoice)) err-invalid-state)
         (asserts! (is-eq (get state milestone) milestone-pending) err-invalid-milestone-state)
         (asserts! (previous-milestone-cleared invoice-id milestone-id) err-invalid-state)
+        ;; One role per invoice: caller must not already be merchant or client
+        (asserts! (not (is-eq tx-sender (get merchant invoice))) err-caller-is-merchant)
+        (asserts! (not (is-eq tx-sender (get client invoice))) err-caller-is-client)
+        ;; LP exclusivity: if an LP is already assigned, only that LP may fund
         (asserts!
           (if (is-none (get lp invoice))
             true
@@ -766,7 +770,7 @@
         err-invalid-state
       )
       milestone
-      (asserts! (<= (get maturity-height invoice) stacks-block-height) err-too-early)
+      ;; MVP: maturity height is informational only - settlement allowed anytime
       (if (> approved-repayment u0)
         (try! (transfer-sbtc approved-repayment contract-self lp))
         true
@@ -852,7 +856,7 @@
         )
         err-invalid-milestone-state
       )
-      (asserts! (> stacks-block-height (get due-block-height milestone)) err-too-early)
+      ;; MVP: due block height is informational only - disputes allowed anytime
       (map-set milestones
         { invoice-id: invoice-id, milestone-id: milestone-id }
         (merge milestone { state: milestone-disputed })

@@ -168,11 +168,47 @@ export default function HomePage() {
                 hint="Pulled live from the deployed testnet environment."
                 tone="success"
               />
-              <MetricCard
-                label="Deployed contract"
-                value={formatCompactAddress(CONTRACT_ADDRESS, 8, 6)}
-                hint={CONTRACT_NAME}
-              />
+              <Surface elevated className="relative overflow-hidden border-[rgba(228,177,92,0.22)] bg-[linear-gradient(180deg,rgba(228,177,92,0.14),rgba(15,19,28,0.98))] p-5 sm:p-6">
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[rgba(228,177,92,0.5)] to-transparent" />
+
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <p className="text-sm text-[var(--text-muted)]">Deployed contract</p>
+                    <div className="inline-flex rounded-full border border-[rgba(228,177,92,0.24)] bg-[rgba(228,177,92,0.1)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#f3d39b]">
+                      Live on testnet
+                    </div>
+                  </div>
+
+                  <div className="rounded-[20px] border border-white/10 bg-[rgba(7,10,16,0.52)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--accent)]">
+                      {CONTRACT_NAME}
+                    </p>
+                    <div className="mt-3 rounded-[14px] border border-white/8 bg-black/20 px-3 py-3">
+                      <p className="font-mono text-[12px] leading-6 text-white [overflow-wrap:anywhere]">
+                        {CONTRACT_ADDRESS}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[16px] border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                      Compact view
+                    </p>
+                    <p className="mt-2 rounded-[12px] border border-white/8 bg-black/20 px-3 py-2 font-mono text-[11px] leading-5 text-white [overflow-wrap:anywhere]">
+                      {formatCompactAddress(CONTRACT_ADDRESS, 10, 8)}
+                    </p>
+                  </div>
+
+                  <div className="rounded-[16px] border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                      Network
+                    </p>
+                    <p className="mt-2 text-xs font-medium text-[var(--accent)]">
+                      Stacks testnet
+                    </p>
+                  </div>
+                </div>
+              </Surface>
               <MetricCard
                 label="Registry refresh"
                 value={lastUpdated || 'Waiting'}
@@ -190,20 +226,20 @@ export default function HomePage() {
             <Surface elevated className="p-6 sm:p-7">
               {isConnected && address ? (
                 <>
-                  <p className="ui-eyebrow">Wallet connected</p>
+                  <p className="ui-eyebrow">Leather connected</p>
                   <h2 className="mt-3 text-2xl font-semibold text-white">Ready to operate as {selectedRole}</h2>
                   <p className="mt-3 break-all font-mono text-sm text-[var(--text-secondary)]">{address}</p>
                   <div className="mt-6">
                     <RoleSwitcher selectedRole={selectedRole} setSelectedRole={setSelectedRole} />
                   </div>
                   <div className="mt-6 rounded-[var(--radius-md)] border border-white/8 bg-white/[0.03] p-4 text-sm text-[var(--text-secondary)]">
-                    Connected wallet
+                    Connected Leather account
                     <div className="mt-1 font-mono text-xs text-white">{formatCompactAddress(address, 10, 8)}</div>
                   </div>
                 </>
               ) : (
                 <EmptyState
-                  title="Connect a wallet when you are ready"
+                  title="Connect Leather when you are ready"
                   description={
                     isAvailable
                       ? 'You can still explore the product structure first. Wallet connection only becomes necessary when you want to sign, fund, approve, or settle on-chain.'

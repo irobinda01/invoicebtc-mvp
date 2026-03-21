@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Role } from '@/lib/types'
 import {
@@ -44,18 +44,15 @@ interface WalletContextValue {
 
 const WalletContext = createContext<WalletContextValue | null>(null)
 
-function getInitialRole(): Role {
-  if (typeof window === 'undefined') return 'observer'
-  const storedRole = window.localStorage.getItem('invoicebtc_demo_role') as Role | null
-  return storedRole ?? 'observer'
-}
-
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [address, setAddress] = useState<string | null>(null)
   const [status, setStatus] = useState<WalletStatus>(WALLET_STATUS.disconnected)
   const [walletError, setWalletError] = useState<string | null>(null)
-  const [selectedRole, setSelectedRoleState] = useState<Role>(getInitialRole)
+  // Initialize with 'observer' to match the server render.
+  // Sync from localStorage after hydration to avoid an SSR/client mismatch.
+  const [selectedRole, setSelectedRoleState] = useState<Role>('observer')
   const [connecting, setConnecting] = useState(false)
+  const connectCancelledRef = useRef(false)
   const [isAvailable, setIsAvailable] = useState(false)
   const [isBootstrapping, setIsBootstrapping] = useState(true)
 
@@ -70,50 +67,105 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     } catch {}
   }, [])
 
+  // Restore the persisted role after hydration (client-only).
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem('invoicebtc_demo_role') as Role | null
+      if (stored) setSelectedRoleState(stored)
+    } catch {}
+  }, [])
+
   const syncFromSnapshot = useCallback((nextAddress: string | null, nextStatus?: WalletStatus) => {
     setAddress(nextAddress)
     setStatus(nextStatus ?? (nextAddress ? WALLET_STATUS.connected : WALLET_STATUS.disconnected))
   }, [])
 
-  // On mount: silent, synchronous restore from @stacks/connect localStorage.
-  // No wallet API call — avoids popups or latency on page refresh.
-  useEffect(() => {
+  const refreshAvailability = useCallback(() => {
     const available = getWalletAvailability()
     setIsAvailable(available)
+    return available
+  }, [])
 
-    if (!available) {
-      setStatus(WALLET_STATUS.unavailable)
+  // On mount: silent restore from localStorage.
+  // Poll every 100 ms for up to 3 s waiting for Leather to inject its provider.
+  // Commits as soon as the provider is detected; falls back to "unavailable"
+  // only after the full wait has elapsed with no provider found.
+  useEffect(() => {
+    let cancelled = false
+    const POLL_MS = 100
+    const MAX_MS = 3000
+    const start = Date.now()
+
+    function commit(available: boolean) {
+      if (cancelled) return
+      setIsAvailable(available)
+
+      if (!available) {
+        setStatus(WALLET_STATUS.unavailable)
+        setIsBootstrapping(false)
+        return
+      }
+
+      const snapshot = getStoredWalletSnapshot()
+
+      if (!snapshot.isConnected || !snapshot.address) {
+        setStatus(WALLET_STATUS.disconnected)
+        setIsBootstrapping(false)
+        return
+      }
+
+      if (isTestnetAddress(snapshot.address)) {
+        setAddress(snapshot.address)
+        setStatus(WALLET_STATUS.connected)
+      } else {
+        setStatus(WALLET_STATUS.wrongNetwork)
+        setWalletError(
+          'Previously connected address is not on Stacks testnet. Switch Leather to Testnet and reconnect.',
+        )
+      }
+
       setIsBootstrapping(false)
-      return
     }
 
-    const snapshot = getStoredWalletSnapshot()
-
-    if (!snapshot.isConnected || !snapshot.address) {
-      setStatus(WALLET_STATUS.disconnected)
-      setIsBootstrapping(false)
-      return
+    function poll() {
+      if (cancelled) return
+      if (getWalletAvailability()) {
+        commit(true)
+        return
+      }
+      if (Date.now() - start >= MAX_MS) {
+        commit(false)
+        return
+      }
+      setTimeout(poll, POLL_MS)
     }
 
-    // Validate the persisted address is a Stacks testnet address (ST prefix).
-    if (isTestnetAddress(snapshot.address)) {
-      setAddress(snapshot.address)
-      setStatus(WALLET_STATUS.connected)
-    } else {
-      setStatus(WALLET_STATUS.wrongNetwork)
-      setWalletError(
-        'Previously connected address is not on Stacks testnet. Switch Leather to Testnet and reconnect.',
-      )
-    }
+    poll()
 
-    setIsBootstrapping(false)
+    return () => { cancelled = true }
   }, []) // intentionally empty — runs once on mount
+
+  useEffect(() => {
+    function syncAvailabilityFromWindow() {
+      const available = refreshAvailability()
+      if (!available && status === WALLET_STATUS.connected) {
+        syncFromSnapshot(null, WALLET_STATUS.unavailable)
+      }
+    }
+
+    window.addEventListener('focus', syncAvailabilityFromWindow)
+    document.addEventListener('visibilitychange', syncAvailabilityFromWindow)
+
+    return () => {
+      window.removeEventListener('focus', syncAvailabilityFromWindow)
+      document.removeEventListener('visibilitychange', syncAvailabilityFromWindow)
+    }
+  }, [refreshAvailability, status, syncFromSnapshot])
 
   // reconnect() is the explicit "Re-check Leather" action.
   // It calls the wallet API to refresh addresses from the live extension state.
   const reconnect = useCallback(async () => {
-    const available = getWalletAvailability()
-    setIsAvailable(available)
+    const available = refreshAvailability()
 
     if (!available) {
       syncFromSnapshot(null, WALLET_STATUS.unavailable)
@@ -149,11 +201,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       }
       setWalletError(getWalletErrorMessage(error))
     }
-  }, [syncFromSnapshot])
+  }, [refreshAvailability, syncFromSnapshot])
 
   const connect = useCallback(async () => {
-    const available = getWalletAvailability()
-    setIsAvailable(available)
+    const available = refreshAvailability()
 
     if (!available) {
       setStatus(WALLET_STATUS.unavailable)
@@ -161,12 +212,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       return
     }
 
+    connectCancelledRef.current = false
     setConnecting(true)
     setStatus(WALLET_STATUS.connecting)
     setWalletError(null)
 
     try {
       const response = await connectLeatherTestnet()
+
+      // User may have clicked Cancel while Leather was open — bail out.
+      if (connectCancelledRef.current) return
+
       if (!response.address) {
         setAddress(null)
         setStatus(WALLET_STATUS.wrongNetwork)
@@ -180,6 +236,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setStatus(WALLET_STATUS.connected)
       setWalletError(null)
     } catch (error) {
+      if (connectCancelledRef.current) return
       setAddress(null)
       if (isLeatherRejectedError(error)) {
         setStatus(WALLET_STATUS.rejected)
@@ -190,11 +247,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       }
       setWalletError(getWalletErrorMessage(error))
     } finally {
-      setConnecting(false)
+      if (!connectCancelledRef.current) setConnecting(false)
     }
-  }, [])
+  }, [refreshAvailability])
 
   const disconnect = useCallback(() => {
+    connectCancelledRef.current = true
     disconnectWallet()
     setAddress(null)
     setStatus(isAvailable ? WALLET_STATUS.disconnected : WALLET_STATUS.unavailable)
@@ -213,7 +271,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       if (!isReady) {
         throw new Error('Switch Leather to Stacks Testnet before submitting a transaction.')
       }
-      return requestContractCall(params)
+      return requestContractCall({ ...params, address })
     },
     [address, isAvailable, isReady],
   )

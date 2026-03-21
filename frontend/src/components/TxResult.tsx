@@ -16,8 +16,8 @@ interface Props {
 const STAGE_MESSAGES: Record<TxStage, { heading: string; body: string }> = {
   idle: { heading: '', body: '' },
   'awaiting-wallet': {
-    heading: 'Awaiting wallet confirmation',
-    body: 'Review the transaction details in Leather, then approve to broadcast it on Stacks testnet.',
+    heading: 'Awaiting Leather approval',
+    body: 'Review the transaction details in Leather, then approve to broadcast on Stacks testnet.',
   },
   submitted: {
     heading: 'Transaction submitted',
@@ -59,7 +59,7 @@ export function TxResult({ txId, error, loading, stage, label = 'Transaction' }:
     return (
       <div className="mt-4 rounded-[var(--radius-md)] border border-[rgba(200,93,99,0.34)] bg-[rgba(200,93,99,0.1)] p-4 text-sm text-[#f2c4c7]">
         <p className="font-medium text-white">{label} failed</p>
-        <p className="mt-1">{error ?? 'The wallet request could not be completed.'}</p>
+        <p className="mt-1">{error ?? 'The Leather request could not be completed.'}</p>
       </div>
     )
   }

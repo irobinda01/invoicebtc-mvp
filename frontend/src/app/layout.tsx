@@ -13,7 +13,14 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="dark">
-      <body>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){var MM_ID='chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn/';function isMetaMaskNoise(value){try{var text=String(value&&value.message||value||'');var stack=String(value&&value.stack||'');return text.indexOf('Failed to connect to MetaMask')>-1||text.indexOf('MetaMask extension not found')>-1||stack.indexOf(MM_ID)>-1;}catch(_){return false;}}window.addEventListener('error',function(e){if(isMetaMaskNoise(e.error)||isMetaMaskNoise(e.message)||String(e.filename||'').indexOf(MM_ID)>-1){e.preventDefault();e.stopImmediatePropagation();}},true);window.addEventListener('unhandledrejection',function(e){if(isMetaMaskNoise(e.reason)){e.preventDefault();e.stopImmediatePropagation();}},true);})();`,
+          }}
+        />
+      </head>
+      <body suppressHydrationWarning>
         <WalletProvider>
           <AppShell>
             <Header />

@@ -211,13 +211,14 @@ Set these values in `frontend/.env.local`:
 ```bash
 NEXT_PUBLIC_STACKS_API_BASE=https://api.testnet.hiro.so
 NEXT_PUBLIC_CONTRACT_ADDRESS=ST1YBHMDH6ESJ1DBY8MK72XER9BG9646QMCS610PE
-NEXT_PUBLIC_CONTRACT_NAME=invoicebtc
+NEXT_PUBLIC_CONTRACT_NAME=invoicebtc-v4
 NEXT_PUBLIC_EXPLORER_BASE=https://explorer.hiro.so/txid
+NEXT_PUBLIC_EXPLORER_ADDRESS_BASE=https://explorer.hiro.so/address
 ```
 
 Current deployed public testnet contract:
 
-- `ST1YBHMDH6ESJ1DBY8MK72XER9BG9646QMCS610PE.invoicebtc`
+- `ST1YBHMDH6ESJ1DBY8MK72XER9BG9646QMCS610PE.invoicebtc-v4`
 
 This repo is hardwired to the standard public testnet sBTC token principal:
 

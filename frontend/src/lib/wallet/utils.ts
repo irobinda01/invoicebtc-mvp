@@ -1,5 +1,4 @@
-import { getLocalStorage } from '@stacks/connect'
-import { LEATHER_PROVIDER_ID, TESTNET_ADDRESS_PREFIX } from './constants'
+import { TESTNET_ADDRESS_PREFIX } from './constants'
 import type { WalletAddressEntry } from './types'
 
 // ─── Address helpers ──────────────────────────────────────────────────────────
@@ -8,25 +7,8 @@ export function isTestnetAddress(address: string | null | undefined) {
   return !!address && address.toUpperCase().startsWith(TESTNET_ADDRESS_PREFIX)
 }
 
-export function getStoredTestnetAddress() {
-  const storage = getLocalStorage()
-  const entry = storage?.addresses.stx.find((address) => isTestnetAddress(address.address))
-  return entry?.address ?? null
-}
-
 export function pickTestnetAddress(addresses: WalletAddressEntry[]) {
   return addresses.find((entry) => isTestnetAddress(entry.address)) ?? null
-}
-
-// ─── Connect options ──────────────────────────────────────────────────────────
-
-export function getConnectOptions() {
-  return {
-    approvedProviderIds: [LEATHER_PROVIDER_ID] as string[],
-    persistWalletSelect: true,
-    enableLocalStorage: true,
-    enableOverrides: true,
-  }
 }
 
 // ─── Error classification ─────────────────────────────────────────────────────
