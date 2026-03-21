@@ -25,6 +25,11 @@ path = 'contracts/invoicebtc.clar'
 clarity_version = 3
 epoch = 3.0
 
+[contracts.invoicebtc-v4]
+path = 'contracts/invoicebtc.clar'
+clarity_version = 3
+epoch = 3.0
+
 [contracts.sip-010-trait]
 path = 'contracts/sip-010-trait.clar'
 clarity_version = 3

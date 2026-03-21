@@ -5,6 +5,8 @@ import {
   STACKS_API_BASE,
   CONTRACT_ADDRESS,
   CONTRACT_NAME,
+  SBTC_CONTRACT_ADDRESS,
+  SBTC_CONTRACT_NAME,
 } from './config'
 import { cvToJSON, hexToCV } from '@stacks/transactions'
 import type { Invoice, Milestone } from './types'
@@ -274,6 +276,29 @@ export async function fetchInvoiceReadiness(
     settlementEligibleMilestones: settleResponses
       .map((isEligible, index) => (isEligible ? index + 1 : null))
       .filter((value): value is number => value !== null),
+  }
+}
+
+export async function fetchSbtcBalance(address: string): Promise<bigint> {
+  try {
+    // Encode standardPrincipalCV for the address argument
+    const { serializeCV, standardPrincipalCV } = await import('@stacks/transactions')
+    const arg = '0x' + Buffer.from(serializeCV(standardPrincipalCV(address))).toString('hex')
+    const url = `${STACKS_API_BASE}/v2/contracts/call-read/${SBTC_CONTRACT_ADDRESS}/${SBTC_CONTRACT_NAME}/get-balance`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sender: address, arguments: [arg] }),
+    })
+    if (!res.ok) return BigInt(0)
+    const data = await res.json() as { okay?: boolean; result?: string }
+    if (!data.okay || !data.result) return BigInt(0)
+    const parsed = cvToJSON(hexToCV(data.result))
+    const inner = (parsed as any)?.value
+    if (inner?.type === 'uint') return BigInt(inner.value as string)
+    return BigInt(0)
+  } catch {
+    return BigInt(0)
   }
 }
 

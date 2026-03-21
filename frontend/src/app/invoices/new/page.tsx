@@ -127,7 +127,8 @@ export default function NewInvoicePage() {
         fetchChainInfo(),
         fetchNextInvoiceId(),
       ])      
-      const currentHeight = infoRes.stacksTipHeight || infoRes.burnBlockHeight
+      const currentHeight = infoRes.stacksTipHeight
+      if (!currentHeight) throw new Error('Could not fetch current Stacks block height. Please try again.')
       const predictedInvoiceId = lastInvoiceId + 1
 
       const fundingDeadline = currentHeight + parseInt(fundingDeadlineBlocks)
@@ -159,7 +160,7 @@ export default function NewInvoicePage() {
         contractName: CONTRACT_NAME,
         functionName: 'create-invoice',
         functionArgs: [
-          standardPrincipalCV(clientAddress.trim()),
+          standardPrincipalCV(clientAddress.trim().toUpperCase()),
           uintCV(totalFaceValue()),
           uintCV(fundingDeadline),
           uintCV(maturityHeight),
@@ -185,7 +186,7 @@ export default function NewInvoicePage() {
       <PageContainer>
         <Section className="pt-10">
           <EmptyState
-            title="Connect a wallet to create an invoice"
+            title="Connect Leather to create an invoice"
             description="Invoice creation is the merchant starting point. Once connected, you can define client terms, milestone amounts, discount rates, and settlement timing."
             action={
               isAvailable ? (

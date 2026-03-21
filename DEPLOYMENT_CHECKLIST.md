@@ -35,7 +35,7 @@ clarinet deployments apply --testnet
 After deployment:
 
 - Record the deployed contract address.
-- Confirm the deployed contract name is `invoicebtc`.
+- Confirm the deployed contract name is `invoicebtc-v4`.
 - Verify the contract appears on the Stacks testnet explorer.
 
 ## 5. Frontend Environment
@@ -45,8 +45,9 @@ Create `frontend/.env.local` from [`frontend/.env.local.example`](/c:/Users/HP/D
 ```bash
 NEXT_PUBLIC_STACKS_API_BASE=https://api.testnet.hiro.so
 NEXT_PUBLIC_CONTRACT_ADDRESS=ST1YBHMDH6ESJ1DBY8MK72XER9BG9646QMCS610PE
-NEXT_PUBLIC_CONTRACT_NAME=invoicebtc
+NEXT_PUBLIC_CONTRACT_NAME=invoicebtc-v4
 NEXT_PUBLIC_EXPLORER_BASE=https://explorer.hiro.so/txid
+NEXT_PUBLIC_EXPLORER_ADDRESS_BASE=https://explorer.hiro.so/address
 ```
 
 ## 6. Frontend Verification

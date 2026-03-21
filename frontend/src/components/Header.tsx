@@ -113,8 +113,9 @@ function RoleChip() {
 
   return (
     <div className="hidden items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.03] pl-2.5 pr-2 py-[5px] text-[11px] sm:flex">
-      <span className={cn('h-[7px] w-[7px] shrink-0 rounded-full', ROLE_DOT[selectedRole] ?? 'bg-white/20')} />
+      <span suppressHydrationWarning className={cn('h-[7px] w-[7px] shrink-0 rounded-full', ROLE_DOT[selectedRole] ?? 'bg-white/20')} />
       <select
+        suppressHydrationWarning
         value={selectedRole}
         onChange={(e) => setSelectedRole(e.target.value as Role)}
         className="appearance-none bg-transparent font-medium capitalize text-[var(--text-muted)] outline-none transition-colors cursor-pointer hover:text-white"
@@ -140,7 +141,8 @@ function WalletChip() {
   const {
     address, isConnected, isBootstrapping,
     connecting, connect, disconnect,
-    isAvailable, status,
+    isAvailable, status, reconnect,
+    walletError, clearWalletError,
   } = useWallet()
 
   const [open, setOpen] = useState(false)
@@ -204,7 +206,7 @@ function WalletChip() {
             {/* Address */}
             <div className="p-4 pb-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-muted)]">
-                Connected wallet
+                Connected Leather account
               </p>
               <p className="mt-2 break-all font-mono text-[11px] leading-[1.7] text-white">
                 {address}
@@ -245,17 +247,20 @@ function WalletChip() {
               </div>
             </div>
 
-            {/* Disconnect */}
+            {/* Local session controls */}
             <div className="border-t border-white/[0.06]">
+              <div className="px-4 pt-3 text-[10px] leading-snug text-[var(--text-muted)]">
+                This only clears InvoiceBTC&apos;s local session. To revoke app access, disconnect the app in Leather.
+              </div>
               <button
                 type="button"
                 onClick={() => { disconnect(); setOpen(false) }}
-                className="flex w-full items-center gap-2 px-4 py-[10px] text-[11px] font-medium text-[var(--text-muted)] transition hover:bg-white/[0.04] hover:text-[#f0bec1]"
+                className="mt-2 flex w-full items-center gap-2 px-4 py-[10px] text-[11px] font-medium text-[var(--text-muted)] transition hover:bg-white/[0.04] hover:text-[#f0bec1]"
               >
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                   <path d="M5 1.5H2.5a1 1 0 00-1 1v7a1 1 0 001 1H5M8 8.5l3-3-3-3M5 5.5h6" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Disconnect
+                Clear local session
               </button>
             </div>
           </div>
@@ -264,35 +269,73 @@ function WalletChip() {
     )
   }
 
-  // ── Wallet not installed ──
+  // ── Wallet not detected ──
   if (!isAvailable) {
     return (
-      <a
-        href={WALLET_INSTALL_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex h-[30px] items-center rounded-full border border-white/[0.09] bg-white/[0.04] px-4 text-[11px] font-medium text-[var(--text-muted)] transition hover:border-white/20 hover:text-white"
-      >
-        Install Leather
-      </a>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={reconnect}
+          className="flex h-[30px] items-center rounded-full border border-white/[0.09] bg-white/[0.04] px-3 text-[11px] font-medium text-[var(--text-muted)] transition hover:border-white/20 hover:text-white"
+          title="Re-check for Leather wallet"
+        >
+          Retry
+        </button>
+        <a
+          href={WALLET_INSTALL_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex h-[30px] items-center rounded-full border border-white/[0.09] bg-white/[0.04] px-4 text-[11px] font-medium text-[var(--text-muted)] transition hover:border-white/20 hover:text-white"
+        >
+          Install Leather
+        </a>
+      </div>
     )
   }
 
-  // ── Disconnected / connecting ──
+  // ── Disconnected / connecting / error ──
   return (
-    <button
-      type="button"
-      onClick={connect}
-      disabled={connecting}
-      className="flex h-[30px] items-center gap-1.5 rounded-full border border-[rgba(228,177,92,0.38)] bg-[rgba(228,177,92,0.1)] px-4 text-[11px] font-semibold text-[var(--accent)] transition hover:bg-[rgba(228,177,92,0.18)] disabled:cursor-not-allowed disabled:opacity-50"
-    >
+    <div className="flex flex-col items-end gap-1.5">
       {connecting ? (
-        <>
-          <span className="h-2.5 w-2.5 animate-spin rounded-full border-[1.5px] border-[var(--accent)] border-t-transparent" />
-          Connecting
-        </>
-      ) : 'Connect Leather'}
-    </button>
+        <div className="flex items-center gap-2">
+          {/* Cancel */}
+          <button
+            type="button"
+            onClick={() => disconnect()}
+            className="flex h-[30px] items-center rounded-full border border-white/[0.09] bg-white/[0.04] px-3 text-[11px] font-medium text-[var(--text-muted)] transition hover:border-white/20 hover:text-white"
+          >
+            Cancel
+          </button>
+          {/* Spinner pill */}
+          <div className="flex h-[30px] items-center gap-1.5 rounded-full border border-[rgba(228,177,92,0.38)] bg-[rgba(228,177,92,0.1)] px-4 text-[11px] font-semibold text-[var(--accent)]">
+            <span className="h-2.5 w-2.5 animate-spin rounded-full border-[1.5px] border-[var(--accent)] border-t-transparent" />
+            Waiting…
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => { clearWalletError(); void connect() }}
+          className="flex h-[30px] items-center gap-1.5 rounded-full border border-[rgba(228,177,92,0.38)] bg-[rgba(228,177,92,0.1)] px-4 text-[11px] font-semibold text-[var(--accent)] transition hover:bg-[rgba(228,177,92,0.18)]"
+        >
+          Connect Leather
+        </button>
+      )}
+
+      {/* Instruction shown while Leather popup is open */}
+      {connecting && (
+        <p className="max-w-[200px] text-right text-[10px] leading-snug text-[var(--text-muted)]">
+          Approve the connection in{' '}
+          <span className="font-semibold text-[var(--accent)]">Leather</span>.
+        </p>
+      )}
+
+      {walletError && !connecting && (
+        <p className="max-w-[220px] text-right text-[10px] leading-tight text-[var(--danger)]">
+          {walletError}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -319,15 +362,13 @@ function WarningStrip() {
             </svg>
             {message}
           </div>
-          {isWrongNetwork && (
-            <button
-              type="button"
-              onClick={reconnect}
-              className="shrink-0 rounded-lg border border-[rgba(228,177,92,0.28)] bg-[rgba(228,177,92,0.1)] px-3 py-[4px] text-[10px] font-semibold text-[var(--accent)] transition hover:bg-[rgba(228,177,92,0.18)]"
-            >
-              Re-check
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={reconnect}
+            className="shrink-0 rounded-lg border border-[rgba(228,177,92,0.28)] bg-[rgba(228,177,92,0.1)] px-3 py-[4px] text-[10px] font-semibold text-[var(--accent)] transition hover:bg-[rgba(228,177,92,0.18)]"
+          >
+            Re-check
+          </button>
         </div>
       </PageContainer>
     </div>

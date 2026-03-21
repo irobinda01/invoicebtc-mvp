@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchLiveTxStatus } from '@/lib/tx'
+import { normalizeWalletError } from '@/lib/wallet/utils'
 
 /**
  * Lifecycle stage of a Stacks transaction write.
@@ -95,22 +96,25 @@ export function useTxStatus(): UseTxStatus {
         const txStatus = await fetchLiveTxStatus(state.txId!)
         if (cancelled) return
 
-        if (txStatus === 'success') {
+        if (txStatus.status === 'success') {
           confirm(state.txId!)
           return
         }
 
-        if (txStatus === 'abort_by_response') {
-          fail('The transaction was confirmed on-chain but the contract rejected it.', state.txId)
+        if (txStatus.status === 'abort_by_response') {
+          const msg = txStatus.repr
+            ? normalizeWalletError(txStatus.repr)
+            : 'The transaction was confirmed on-chain but the contract rejected it.'
+          fail(msg, state.txId)
           return
         }
 
-        if (txStatus === 'abort_by_post_condition') {
+        if (txStatus.status === 'abort_by_post_condition') {
           fail('The wallet safety checks blocked this transaction during confirmation.', state.txId)
           return
         }
 
-        if (txStatus === 'dropped') {
+        if (txStatus.status === 'dropped') {
           fail('The transaction was dropped before confirmation. Please retry from the app.', state.txId)
           return
         }
