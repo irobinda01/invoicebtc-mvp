@@ -4,23 +4,31 @@ description = 'InvoiceBTC escrow-backed invoice factoring MVP'
 authors = []
 telemetry = true
 cache_dir = '.\.cache'
-requirements = []
+
+[[project.requirements]]
+contract_id = 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-deposit'
+
+[[project.requirements]]
+contract_id = 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token'
+[contracts.invoicebtc]
+path = 'contracts/invoicebtc.clar'
+clarity_version = 3
+epoch = 3.0
+
+[contracts.invoicebtc-v2]
+path = 'contracts/invoicebtc.clar'
+clarity_version = 3
+epoch = 3.0
+
+[contracts.invoicebtc-v3]
+path = 'contracts/invoicebtc.clar'
+clarity_version = 3
+epoch = 3.0
 
 [contracts.sip-010-trait]
 path = 'contracts/sip-010-trait.clar'
-clarity_version = 2
-epoch = 2.5
-
-[contracts.mock-sbtc]
-path = 'contracts/mock-sbtc.clar'
-clarity_version = 2
-epoch = 2.5
-
-[contracts.invoicebtc]
-path = 'contracts/invoicebtc.clar'
-clarity_version = 2
-epoch = 2.5
-
+clarity_version = 3
+epoch = 3.0
 [repl.analysis]
 passes = ['check_checker']
 

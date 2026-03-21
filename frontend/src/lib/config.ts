@@ -9,20 +9,17 @@ export const STACKS_API_BASE =
 
 // Deployed invoicebtc contract (format: "ST1XXX...address.contract-name")
 export const CONTRACT_ADDRESS =
-  process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM'
+  process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? 'ST1YBHMDH6ESJ1DBY8MK72XER9BG9646QMCS610PE'
 
 export const CONTRACT_NAME =
-  process.env.NEXT_PUBLIC_CONTRACT_NAME ?? 'invoicebtc'
+  process.env.NEXT_PUBLIC_CONTRACT_NAME ?? 'invoicebtc-v3'
 
-// sBTC-compatible SIP-010 token contract on public testnet
-export const SBTC_CONTRACT_ADDRESS =
-  process.env.NEXT_PUBLIC_SBTC_CONTRACT_ADDRESS ?? 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM'
+// sBTC SIP-010 token contract — address used by the deployed invoicebtc contract on testnet.
+export const SBTC_CONTRACT_ADDRESS = 'ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT'
 
-export const SBTC_CONTRACT_NAME =
-  process.env.NEXT_PUBLIC_SBTC_CONTRACT_NAME ?? 'sbtc-token'
+export const SBTC_CONTRACT_NAME = 'sbtc-token'
 
-export const SBTC_TOKEN_NAME =
-  process.env.NEXT_PUBLIC_SBTC_TOKEN_NAME ?? 'sbtc'
+export const SBTC_TOKEN_NAME = 'sbtc-token'
 
 // Full contract identifiers
 export const FULL_CONTRACT_ID = `${CONTRACT_ADDRESS}.${CONTRACT_NAME}`
@@ -39,8 +36,17 @@ export function explorerTxUrl(txId: string) {
   return `${EXPLORER_BASE}/${txId}${EXPLORER_SUFFIX}`
 }
 
+export const EXPLORER_ADDRESS_BASE =
+  process.env.NEXT_PUBLIC_EXPLORER_ADDRESS_BASE ??
+  'https://explorer.hiro.so/address'
+
+export function explorerAddressUrl(address: string) {
+  return `${EXPLORER_ADDRESS_BASE}/${address}?chain=testnet`
+}
+
 // Display label for network
 export const NETWORK_LABEL = 'Stacks Public Testnet'
+export const WALLET_NETWORK_LABEL = 'Leather on Stacks Testnet'
 
 // sBTC has 8 decimals
 export const SBTC_DECIMALS = 8

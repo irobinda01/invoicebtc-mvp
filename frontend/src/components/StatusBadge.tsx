@@ -1,45 +1,46 @@
 'use client'
 
 import type { InvoiceStatus, MilestoneStatus } from '@/lib/types'
+import { cn } from '@/lib/ui'
 
 const INVOICE_COLORS: Record<InvoiceStatus, string> = {
-  draft: 'bg-gray-700 text-gray-200',
-  'merchant-signed': 'bg-yellow-900 text-yellow-300',
-  'client-signed': 'bg-yellow-800 text-yellow-200',
-  'escrow-funded': 'bg-blue-900 text-blue-300',
-  active: 'bg-green-900 text-green-300',
-  matured: 'bg-emerald-900 text-emerald-300',
-  dispute: 'bg-red-900 text-red-300',
-  completed: 'bg-emerald-900 text-emerald-300',
-  cancelled: 'bg-gray-800 text-gray-400',
+  draft: 'border-white/10 bg-white/[0.05] text-white',
+  'merchant-signed': 'border-[rgba(228,177,92,0.25)] bg-[rgba(228,177,92,0.14)] text-[#f3d39b]',
+  'client-signed': 'border-[rgba(109,157,247,0.28)] bg-[rgba(109,157,247,0.14)] text-[#bdd0ff]',
+  'escrow-funded': 'border-[rgba(109,157,247,0.32)] bg-[rgba(109,157,247,0.16)] text-[#d7e3ff]',
+  active: 'border-[rgba(67,173,139,0.28)] bg-[rgba(67,173,139,0.14)] text-[#bfe9d9]',
+  matured: 'border-[rgba(214,163,74,0.28)] bg-[rgba(214,163,74,0.12)] text-[#efdaa9]',
+  dispute: 'border-[rgba(200,93,99,0.32)] bg-[rgba(200,93,99,0.14)] text-[#f0bec1]',
+  completed: 'border-[rgba(67,173,139,0.32)] bg-[rgba(67,173,139,0.18)] text-[#d8f8ea]',
+  cancelled: 'border-white/10 bg-white/[0.04] text-[var(--text-secondary)]',
 }
 
 const INVOICE_LABELS: Record<InvoiceStatus, string> = {
   draft: 'Draft',
-  'merchant-signed': 'Partially Signed',
-  'client-signed': 'Fully Signed',
-  'escrow-funded': 'Escrow Funded',
+  'merchant-signed': 'Merchant signed',
+  'client-signed': 'Client signed',
+  'escrow-funded': 'Escrow funded',
   active: 'Active',
   matured: 'Matured',
-  dispute: 'In Dispute',
+  dispute: 'In dispute',
   completed: 'Completed',
   cancelled: 'Cancelled',
 }
 
 const MILESTONE_COLORS: Record<MilestoneStatus, string> = {
-  pending: 'bg-gray-700 text-gray-300',
-  funded: 'bg-amber-900 text-amber-300',
-  submitted: 'bg-yellow-900 text-yellow-300',
-  approved: 'bg-blue-900 text-blue-300',
-  disputed: 'bg-red-900 text-red-300',
-  settled: 'bg-emerald-900 text-emerald-300',
-  cancelled: 'bg-gray-800 text-gray-400',
+  pending: 'border-white/10 bg-white/[0.04] text-[var(--text-secondary)]',
+  funded: 'border-[rgba(228,177,92,0.28)] bg-[rgba(228,177,92,0.14)] text-[#f3d39b]',
+  submitted: 'border-[rgba(214,163,74,0.28)] bg-[rgba(214,163,74,0.12)] text-[#efdba6]',
+  approved: 'border-[rgba(109,157,247,0.28)] bg-[rgba(109,157,247,0.14)] text-[#d7e3ff]',
+  disputed: 'border-[rgba(200,93,99,0.32)] bg-[rgba(200,93,99,0.14)] text-[#f0bec1]',
+  settled: 'border-[rgba(67,173,139,0.32)] bg-[rgba(67,173,139,0.14)] text-[#c9f2e1]',
+  cancelled: 'border-white/10 bg-white/[0.04] text-[var(--text-secondary)]',
 }
 
 const MILESTONE_LABELS: Record<MilestoneStatus, string> = {
   pending: 'Pending',
   funded: 'Funded',
-  submitted: 'Submitted',
+  submitted: 'Proof submitted',
   approved: 'Approved',
   disputed: 'Disputed',
   settled: 'Settled',
@@ -48,7 +49,7 @@ const MILESTONE_LABELS: Record<MilestoneStatus, string> = {
 
 export function StatusBadge({ status }: { status: InvoiceStatus }) {
   return (
-    <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${INVOICE_COLORS[status]}`}>
+    <span className={cn('inline-flex rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em]', INVOICE_COLORS[status])}>
       {INVOICE_LABELS[status]}
     </span>
   )
@@ -56,7 +57,7 @@ export function StatusBadge({ status }: { status: InvoiceStatus }) {
 
 export function MilestoneStateBadge({ status }: { status: MilestoneStatus }) {
   return (
-    <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${MILESTONE_COLORS[status]}`}>
+    <span className={cn('inline-flex rounded-full border px-3 py-1 text-xs font-medium', MILESTONE_COLORS[status])}>
       {MILESTONE_LABELS[status]}
     </span>
   )

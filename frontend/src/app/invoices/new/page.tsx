@@ -1,42 +1,69 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useWallet } from '@/lib/useWallet'
-import { strToBytes32 } from '@/lib/contract'
-import { btcToSats, satsToBtc, CONTRACT_ADDRESS, CONTRACT_NAME, NETWORK_LABEL, STACKS_API_BASE } from '@/lib/config'
+import { useTxStatus } from '@/lib/useTxStatus'
+import { fetchChainInfo, fetchNextInvoiceId, strToBytes32 } from '@/lib/contract'
+import { btcToSats, satsToBtc, CONTRACT_ADDRESS, CONTRACT_NAME, NETWORK_LABEL } from '@/lib/config'
+import { normalizeWalletError, isTestnetAddress } from '@/lib/wallet/utils'
+import { RoleSwitcher } from '@/components/RoleSwitcher'
 import { TxResult } from '@/components/TxResult'
+import { Button, EmptyState, Field, Input, MetricCard, PageContainer, Section, Surface } from '@/components/ui'
+import { WALLET_INSTALL_URL } from '@/lib/wallet/constants'
+
+function blocksToHuman(blocks: string): string {
+  const n = parseInt(blocks)
+  if (isNaN(n) || n <= 0) return ''
+  const mins = n * 10
+  if (mins < 60) return `≈ ${mins} min`
+  const hours = mins / 60
+  if (hours < 48) return `≈ ${Math.round(hours)}h`
+  return `≈ ${Math.round(hours / 24)}d`
+}
+
+function BlockHint({ blocks, label }: { blocks: string; label: string }) {
+  const human = blocksToHuman(blocks)
+  if (!human) return null
+  return (
+    <div className="flex items-center gap-2">
+      <span className="inline-flex items-center rounded-md border border-[rgba(228,177,92,0.22)] bg-[rgba(228,177,92,0.08)] px-2 py-0.5 text-[11px] font-semibold text-[var(--accent)]">
+        {human}
+      </span>
+      <span className="text-xs text-[var(--text-muted)]">{label}</span>
+    </div>
+  )
+}
 
 interface MilestoneInput {
   description: string
-  faceValueBtc: string   // BTC display string
-  discountPct: string    // e.g. "5" = 5%
-  dueInBlocks: string    // blocks from now
+  faceValueBtc: string
+  discountPct: string
+  dueInBlocks: string
 }
 
 const EMPTY_MILESTONE: MilestoneInput = {
   description: '',
   faceValueBtc: '',
   discountPct: '5',
-  dueInBlocks: '144', // ~1 day
+  dueInBlocks: '144',
 }
 
 export default function NewInvoicePage() {
-  const { address, isConnected, connect, connecting, selectedRole } = useWallet()
+  const { address, isConnected, connect, connecting, selectedRole, setSelectedRole, requestContractCall, isReady, isWrongNetwork, isAvailable } = useWallet()
   const router = useRouter()
 
   const [clientAddress, setClientAddress] = useState('')
-  const [fundingDeadlineBlocks, setFundingDeadlineBlocks] = useState('72')  // blocks from now
-  const [maturityExtraBlocks, setMaturityExtraBlocks] = useState('288')     // blocks after funding deadline
+  const [fundingDeadlineBlocks, setFundingDeadlineBlocks] = useState('72')
+  const [maturityExtraBlocks, setMaturityExtraBlocks] = useState('288')
   const [metadata, setMetadata] = useState('')
   const [milestones, setMilestones] = useState<MilestoneInput[]>([{ ...EMPTY_MILESTONE }])
 
-  const [txId, setTxId] = useState<string | null>(null)
-  const [txError, setTxError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const tx = useTxStatus()
 
   function addMilestone() {
-    if (milestones.length >= 3) return // keep demo simple
+    if (milestones.length >= 3) return
     setMilestones([...milestones, { ...EMPTY_MILESTONE }])
   }
 
@@ -66,51 +93,46 @@ export default function NewInvoicePage() {
   }
 
   function validate(): string | null {
-    if (!address) return 'Wallet not connected'
-    if (!clientAddress.trim()) return 'Client address required'
-    if (clientAddress.trim() === address) return 'Client cannot be same as merchant'
+    if (!address) return 'Wallet not connected.'
+    if (!clientAddress.trim()) return 'Client address is required.'
+    if (clientAddress.trim() === address) return 'Client cannot be the same address as the merchant.'
+    if (!isTestnetAddress(clientAddress.trim())) return 'Client address must be a Stacks testnet address that starts with ST.'
     for (let i = 0; i < milestones.length; i++) {
       const m = milestones[i]
       const face = btcToSats(m.faceValueBtc)
-      if (!face || face <= 0) return `Milestone ${i + 1}: invalid face value`
+      if (!face || face <= 0) return `Milestone ${i + 1}: enter a valid face value.`
       const disc = parseFloat(m.discountPct)
-      if (isNaN(disc) || disc < 0 || disc >= 100) return `Milestone ${i + 1}: discount must be 0-99%`
+      if (isNaN(disc) || disc < 0 || disc >= 100) return `Milestone ${i + 1}: discount must stay between 0 and 99%.`
       const due = parseInt(m.dueInBlocks)
-      if (isNaN(due) || due < 1) return `Milestone ${i + 1}: invalid due blocks`
+      if (isNaN(due) || due < 1) return `Milestone ${i + 1}: enter a valid due block count.`
     }
-    if (parseInt(fundingDeadlineBlocks) < 1) return 'Funding deadline must be > 0 blocks'
+    if (parseInt(fundingDeadlineBlocks) < 1) return 'Funding deadline must be greater than zero.'
     return null
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const err = validate()
-    if (err) { setTxError(err); return }
+    if (err) {
+      tx.fail(err)
+      return
+    }
 
-    setLoading(true)
-    setTxError(null)
-    setTxId(null)
+    tx.start()
 
     try {
-      const {
-        uintCV,
-        standardPrincipalCV,
-        bufferCV,
-        listCV,
-      } = await import('@stacks/transactions')
-      const { openContractCall } = await import('@stacks/connect')
-      const { getNetwork } = await import('@/lib/useWallet')
+      const { uintCV, standardPrincipalCV, bufferCV, listCV } = await import('@stacks/transactions')
 
-      // We need current block height to compute absolute heights.
-      // Fetch from Stacks API.
-      const infoRes = await fetch(`${STACKS_API_BASE}/v2/info`)
-      const info = await infoRes.json() as { burn_block_height?: number; stacks_tip_height?: number }
-      const currentHeight = info.stacks_tip_height ?? info.burn_block_height ?? 0
+      const [infoRes, lastInvoiceId] = await Promise.all([
+        fetchChainInfo(),
+        fetchNextInvoiceId(),
+      ])      
+      const currentHeight = infoRes.stacksTipHeight || infoRes.burnBlockHeight
+      const predictedInvoiceId = lastInvoiceId + 1
 
       const fundingDeadline = currentHeight + parseInt(fundingDeadlineBlocks)
       const maturityHeight = fundingDeadline + parseInt(maturityExtraBlocks)
 
-      // Build milestone arrays
       const faceValues: ReturnType<typeof uintCV>[] = []
       const merchantPayouts: ReturnType<typeof uintCV>[] = []
       const lpRepayments: ReturnType<typeof uintCV>[] = []
@@ -122,20 +144,17 @@ export default function NewInvoicePage() {
         const payout = calcMerchantPayout(m.faceValueBtc, m.discountPct)
         const dueBlocks = parseInt(m.dueInBlocks)
         cumulativeBlocks += dueBlocks
-        // milestone due height must be <= maturity height
         const dueHeight = Math.min(currentHeight + cumulativeBlocks, maturityHeight)
 
         faceValues.push(uintCV(face))
         merchantPayouts.push(uintCV(payout))
-        lpRepayments.push(uintCV(face)) // lp-repayment == face-value per contract rule
+        lpRepayments.push(uintCV(face))
         dueHeights.push(uintCV(dueHeight))
       }
 
       const metaBytes = strToBytes32(metadata || 'InvoiceBTC MVP')
-      const network = await getNetwork()
 
-      await openContractCall({
-        network,
+      const result = await requestContractCall({
         contractAddress: CONTRACT_ADDRESS,
         contractName: CONTRACT_NAME,
         functionName: 'create-invoice',
@@ -150,261 +169,269 @@ export default function NewInvoicePage() {
           listCV(lpRepayments),
           listCV(dueHeights),
         ],
-        postConditionMode: 1, // allow
-        onFinish: (data) => {
-          setTxId(data.txId)
-          setLoading(false)
-          // Poll for the new invoice ID and redirect
-          setTimeout(() => router.push('/'), 4000)
-        },
-        onCancel: () => {
-          setLoading(false)
-          setTxError('Transaction cancelled.')
+      })
+      tx.done(result.txid ?? '', {
+        onConfirmed: () => {
+          router.push(`/invoices/${predictedInvoiceId}`)
         },
       })
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setTxError(msg)
-      setLoading(false)
+      tx.fail(normalizeWalletError(e))
     }
   }
 
   if (!isConnected) {
     return (
-      <div className="max-w-lg mx-auto text-center py-20">
-        <p className="text-gray-400 mb-4">Connect your wallet to create an invoice.</p>
-        <button
-          onClick={connect}
-          disabled={connecting}
-          className="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-lg"
-        >
-          {connecting ? 'Connecting...' : 'Connect Wallet'}
-        </button>
-      </div>
+      <PageContainer>
+        <Section className="pt-10">
+          <EmptyState
+            title="Connect a wallet to create an invoice"
+            description="Invoice creation is the merchant starting point. Once connected, you can define client terms, milestone amounts, discount rates, and settlement timing."
+            action={
+              isAvailable ? (
+                <Button onClick={connect} disabled={connecting}>
+                  {connecting ? 'Connecting...' : 'Connect Leather'}
+                </Button>
+              ) : (
+                <Button href={WALLET_INSTALL_URL} variant="secondary">Install Leather</Button>
+              )
+            }
+          />
+        </Section>
+      </PageContainer>
     )
   }
 
   const faceTotal = totalFaceValue()
   const payoutTotal = totalMerchantPayout()
+  const lpProfit = faceTotal - payoutTotal
 
   return (
-    <div className="max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold text-white mb-1">Create Invoice</h1>
-      <p className="text-gray-400 text-sm mb-6">
-        Merchant: <span className="font-mono text-gray-300 select-all">{address}</span>
-      </p>
-      <p className="text-gray-500 text-xs mb-6">
-        Network: {NETWORK_LABEL} | Selected role: {selectedRole} | On-chain authority still comes from the connected wallet.
-      </p>
-
-      <form onSubmit={handleSubmit} className="space-y-6">
-
-        {/* Parties */}
-        <section className="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Parties</h2>
-
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">Client Address *</label>
-            <input
-              type="text"
-              required
-              value={clientAddress}
-              onChange={(e) => setClientAddress(e.target.value)}
-              placeholder="ST2... testnet address"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm font-mono focus:outline-none focus:border-orange-500"
-            />
-            <p className="text-xs text-gray-500 mt-1">The client wallet that will sign and fund escrow.</p>
+    <PageContainer>
+      <Section className="pt-4 sm:pt-6">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-3xl">
+            <Link href="/" className="text-sm text-[var(--text-muted)] transition hover:text-white">
+              Back to overview
+            </Link>
+            <h1 className="mt-4 text-balance text-4xl font-semibold tracking-[-0.04em] text-white sm:text-5xl">
+              Create a premium milestone invoice flow.
+            </h1>
+            <p className="mt-4 max-w-2xl text-lg leading-8 text-[var(--text-secondary)]">
+              Define the client, reserve the total invoice value in escrow later, and structure milestone advances so Liquidity Providers fund only when each stage becomes eligible.
+            </p>
           </div>
-        </section>
-
-        {/* Terms */}
-        <section className="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Terms</h2>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Funding Deadline</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="1"
-                  value={fundingDeadlineBlocks}
-                  onChange={(e) => setFundingDeadlineBlocks(e.target.value)}
-                  className="w-24 px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-orange-500"
-                />
-                <span className="text-sm text-gray-400">blocks (~{Math.round(parseInt(fundingDeadlineBlocks || '0') * 10 / 60)}h)</span>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">LP milestone advances must start within this window after escrow is deposited.</p>
+          <Surface elevated className="w-full max-w-md p-6">
+            <p className="ui-eyebrow">Operator context</p>
+            <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
+              Network: {NETWORK_LABEL}
+            </p>
+            <p className="mt-2 break-all font-mono text-xs text-white">{address}</p>
+            <div className="mt-5">
+              <RoleSwitcher selectedRole={selectedRole} setSelectedRole={setSelectedRole} compact />
             </div>
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Maturity (after funding deadline)</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="1"
-                  value={maturityExtraBlocks}
-                  onChange={(e) => setMaturityExtraBlocks(e.target.value)}
-                  className="w-24 px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-orange-500"
-                />
-                <span className="text-sm text-gray-400">more blocks</span>
+            {isWrongNetwork && (
+              <div className="mt-5 rounded-[var(--radius-md)] border border-[rgba(200,93,99,0.28)] bg-[rgba(200,93,99,0.1)] p-4 text-sm text-[#f2c4c7]">
+                Switch Leather to Stacks Testnet before creating an invoice.
               </div>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">Reference / Notes (max 32 chars)</label>
-            <input
-              type="text"
-              maxLength={32}
-              value={metadata}
-              onChange={(e) => setMetadata(e.target.value)}
-              placeholder="e.g. Web redesign project Q2 2025"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-orange-500"
-            />
-          </div>
-        </section>
-
-        {/* Milestones */}
-        <section className="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Milestones</h2>
-            {milestones.length < 3 && (
-              <button
-                type="button"
-                onClick={addMilestone}
-                className="text-xs text-orange-500 hover:text-orange-400 font-medium"
-              >
-                + Add milestone
-              </button>
             )}
-          </div>
+          </Surface>
+        </div>
+      </Section>
 
-          {milestones.map((m, i) => {
-            const face = btcToSats(m.faceValueBtc) || 0
-            const payout = calcMerchantPayout(m.faceValueBtc, m.discountPct)
-            const lpProfit = face - payout
-
-            return (
-              <div key={i} className="bg-gray-800 rounded-lg p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-white">Milestone {i + 1}</span>
-                  {milestones.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => removeMilestone(i)}
-                      className="text-xs text-red-400 hover:text-red-300"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Description</label>
-                  <input
+      <form onSubmit={handleSubmit}>
+        <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+          <div className="space-y-6">
+            <Surface elevated className="p-6 sm:p-8">
+              <p className="ui-eyebrow">Parties</p>
+              <h2 className="mt-3 text-2xl font-semibold text-white">Define who signs and funds</h2>
+              <div className="mt-6 grid gap-5">
+                <Field label="Merchant wallet">
+                  <Input value={address ?? ''} disabled className="font-mono text-xs" />
+                </Field>
+                <Field label="Client wallet" hint="This wallet will sign the invoice and deposit the full escrow balance." required>
+                  <Input
                     type="text"
-                    value={m.description}
-                    onChange={(e) => updateMilestone(i, 'description', e.target.value)}
-                    placeholder="e.g. Design mockups delivered"
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-orange-500"
+                    value={clientAddress}
+                    onChange={(e) => setClientAddress(e.target.value)}
+                    placeholder="ST2... client address"
+                    className="font-mono text-xs"
                   />
-                </div>
+                </Field>
+              </div>
+            </Surface>
 
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Face Value (sBTC)</label>
-                    <input
-                      type="number"
-                      step="0.00000001"
-                      min="0.00000001"
-                      required
-                      value={m.faceValueBtc}
-                      onChange={(e) => updateMilestone(i, 'faceValueBtc', e.target.value)}
-                      placeholder="0.01"
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Discount %</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="99"
-                      value={m.discountPct}
-                      onChange={(e) => updateMilestone(i, 'discountPct', e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Due In (blocks)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={m.dueInBlocks}
-                      onChange={(e) => updateMilestone(i, 'dueInBlocks', e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                </div>
+            <Surface elevated className="p-6 sm:p-8">
+              <p className="ui-eyebrow">Terms</p>
+              <h2 className="mt-3 text-2xl font-semibold text-white">Set the operating window</h2>
+              <div className="mt-6 grid gap-5 sm:grid-cols-2">
+                <Field label="Funding window (blocks)">
+                  <Input
+                    type="number"
+                    min="1"
+                    value={fundingDeadlineBlocks}
+                    onChange={(e) => setFundingDeadlineBlocks(e.target.value)}
+                  />
+                  <BlockHint blocks={fundingDeadlineBlocks} label="for Liquidity Provider to advance funds" />
+                </Field>
+                <Field label="Settlement period (blocks)">
+                  <Input
+                    type="number"
+                    min="1"
+                    value={maturityExtraBlocks}
+                    onChange={(e) => setMaturityExtraBlocks(e.target.value)}
+                  />
+                  <BlockHint blocks={maturityExtraBlocks} label="after funding closes before settlement opens" />
+                </Field>
+              </div>
+              <div className="mt-5">
+                <Field label="Reference or notes" hint="Stored as a short metadata field on-chain.">
+                  <Input
+                    type="text"
+                    maxLength={32}
+                    value={metadata}
+                    onChange={(e) => setMetadata(e.target.value)}
+                    placeholder="Q2 redesign delivery"
+                  />
+                </Field>
+              </div>
+            </Surface>
 
-                {face > 0 && (
-                  <div className="text-xs text-gray-500 flex gap-4">
-                    <span>Merchant receives: <span className="text-green-400 font-mono">{satsToBtc(payout)} sBTC</span></span>
-                    <span>LP earns: <span className="text-purple-400 font-mono">{satsToBtc(lpProfit)} sBTC</span></span>
-                  </div>
+            <Surface elevated className="p-6 sm:p-8">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="ui-eyebrow">Milestones</p>
+                  <h2 className="mt-3 text-2xl font-semibold text-white">Structure the staged funding</h2>
+                </div>
+                {milestones.length < 3 && (
+                  <Button type="button" variant="secondary" onClick={addMilestone}>
+                    Add milestone
+                  </Button>
                 )}
               </div>
-            )
-          })}
 
-          {/* Summary */}
-          {faceTotal > 0 && (
-            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-              <div className="text-xs text-gray-400 uppercase tracking-wide mb-2">Invoice Summary</div>
-              <div className="grid grid-cols-3 gap-2 text-sm">
-                <div>
-                  <div className="text-gray-400">Client Escrows</div>
-                  <div className="font-mono font-semibold text-white">{satsToBtc(faceTotal)} sBTC</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">Total LP Advances</div>
-                  <div className="font-mono font-semibold text-green-400">{satsToBtc(payoutTotal)} sBTC</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">LP Profit</div>
-                  <div className="font-mono font-semibold text-purple-400">{satsToBtc(faceTotal - payoutTotal)} sBTC</div>
-                </div>
+              <div className="mt-6 space-y-4">
+                {milestones.map((m, i) => {
+                  const face = btcToSats(m.faceValueBtc) || 0
+                  const payout = calcMerchantPayout(m.faceValueBtc, m.discountPct)
+
+                  return (
+                    <div key={i} className="rounded-[var(--radius-md)] border border-white/8 bg-white/[0.03] p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-[var(--text-muted)]">Milestone {i + 1}</p>
+                          <h3 className="mt-1 text-lg font-semibold text-white">Funding and settlement terms</h3>
+                        </div>
+                        {milestones.length > 1 && (
+                          <Button type="button" variant="ghost" onClick={() => removeMilestone(i)} className="text-[#f0bec1] hover:text-white">
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+
+                      <div className="mt-5 space-y-5">
+                        <Field label="Description" hint="Visible in the operator flow so participants understand what this milestone represents.">
+                          <Input
+                            type="text"
+                            value={m.description}
+                            onChange={(e) => updateMilestone(i, 'description', e.target.value)}
+                            placeholder="Design handoff delivered"
+                          />
+                        </Field>
+                        <div className="grid gap-5 md:grid-cols-3">
+                          <Field label="Face value (sBTC)" required>
+                            <Input
+                              type="number"
+                              step="0.00000001"
+                              min="0.00000001"
+                              value={m.faceValueBtc}
+                              onChange={(e) => updateMilestone(i, 'faceValueBtc', e.target.value)}
+                              placeholder="0.10"
+                            />
+                          </Field>
+                          <Field label="Discount %" required>
+                            <Input
+                              type="number"
+                              step="0.1"
+                              min="0"
+                              max="99"
+                              value={m.discountPct}
+                              onChange={(e) => updateMilestone(i, 'discountPct', e.target.value)}
+                            />
+                          </Field>
+                          <Field label="Delivery deadline (blocks)" required>
+                            <Input
+                              type="number"
+                              min="1"
+                              value={m.dueInBlocks}
+                              onChange={(e) => updateMilestone(i, 'dueInBlocks', e.target.value)}
+                            />
+                            <BlockHint blocks={m.dueInBlocks} label="from invoice creation" />
+                          </Field>
+                        </div>
+                      </div>
+
+                      {face > 0 && (
+                        <div className="mt-5 grid gap-3 md:grid-cols-3">
+                          <MetricCard label="Client escrows" value={`${satsToBtc(face)} sBTC`} />
+                          <MetricCard label="Merchant receives" value={`${satsToBtc(payout)} sBTC`} tone="success" />
+                          <MetricCard label="Liquidity Provider yield" value={`${satsToBtc(face - payout)} sBTC`} tone="accent" />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
-            </div>
-          )}
-        </section>
+            </Surface>
+          </div>
 
-        <TxResult txId={txId} error={txError} loading={loading} label="Create Invoice" />
+          <div className="space-y-6">
+            <Surface elevated className="sticky top-24 p-6 sm:p-8">
+              <p className="ui-eyebrow">Summary</p>
+              <h2 className="mt-3 text-2xl font-semibold text-white">Review before broadcasting</h2>
+              <div className="mt-6 grid gap-4">
+                <MetricCard
+                  label="Total invoice value"
+                  value={`${satsToBtc(faceTotal)} sBTC`}
+                  hint="The client deposits this full amount into escrow after both signatures."
+                />
+                <MetricCard
+                  label="Total merchant advances"
+                  value={`${satsToBtc(payoutTotal)} sBTC`}
+                  hint="Aggregate amount Liquidity Providers deploy across funded milestones."
+                  tone="success"
+                />
+                <MetricCard
+                  label="Total Liquidity Provider yield"
+                  value={`${satsToBtc(lpProfit)} sBTC`}
+                  hint="Discount captured between face value and milestone advances — the LP's return."
+                  tone="accent"
+                />
+              </div>
+              <div className="mt-6 rounded-[var(--radius-md)] border border-white/8 bg-white/[0.03] p-4 text-sm text-[var(--text-secondary)]">
+                <p className="font-semibold text-white">Broadcast sequence</p>
+                <ol className="mt-3 space-y-2">
+                  <li>1. Merchant creates the invoice on-chain.</li>
+                  <li>2. Client and merchant sign the agreement.</li>
+                  <li>3. Client deposits escrow before Liquidity Provider funding begins.</li>
+                </ol>
+              </div>
 
-        {txId && (
-          <p className="text-sm text-gray-400 text-center">
-            Invoice created! Redirecting to home... or{' '}
-            <button
-              type="button"
-              onClick={() => router.push('/')}
-              className="text-orange-500 underline"
-            >
-              go now
-            </button>
-          </p>
-        )}
+              <TxResult txId={tx.txId} error={tx.error} loading={tx.loading} stage={tx.stage} label="Invoice creation" />
 
-        {!txId && (
-          <button
-            type="submit"
-            disabled={loading || !isConnected}
-            className="w-full py-3 bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white font-bold rounded-xl text-base transition-colors"
-          >
-            {loading ? 'Submitting...' : 'Create Invoice on Chain'}
-          </button>
-        )}
+              {tx.stage !== 'submitted' ? (
+                <Button type="submit" disabled={tx.loading || !isConnected || !isReady} className="mt-6 w-full">
+                  {tx.loading ? 'Submitting...' : 'Create invoice on-chain'}
+                </Button>
+              ) : (
+                <div className="mt-6 rounded-[var(--radius-md)] border border-[rgba(67,173,139,0.24)] bg-[rgba(67,173,139,0.1)] p-4 text-sm text-[#c7f0df]">
+                  Invoice created. Redirecting to the overview shortly.
+                </div>
+              )}
+            </Surface>
+          </div>
+        </div>
       </form>
-    </div>
+    </PageContainer>
   )
 }

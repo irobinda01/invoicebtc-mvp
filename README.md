@@ -1,6 +1,6 @@
 # InvoiceBTC MVP
 
-Escrow-backed, milestone-based invoice factoring on Stacks public testnet using a SIP-010 sBTC integration path.
+Escrow-backed, milestone-based invoice factoring on Stacks public testnet using the standard public testnet sBTC token only.
 
 ## Current MVP Scope
 
@@ -16,7 +16,6 @@ This repo currently implements:
 - dispute transition for unresolved milestones
 - close and leftover refund flows
 - a public-testnet frontend wired to real contract calls and read-only calls
-- a local Clarinet/Vitest contract test harness
 
 This repo does not currently implement:
 
@@ -24,22 +23,21 @@ This repo does not currently implement:
 - multiple LPs per invoice
 - arbitration beyond a blocking dispute state
 - automatic invoice editing after creation
-- a live public-testnet sBTC token contract in this repo
+- a bundled public-testnet sBTC token contract in this repo
+- a bundled local contract test harness
 
 ## Contracts In This Repo
 
 - `contracts/invoicebtc.clar`
   Main invoice factoring contract.
 - `contracts/sip-010-trait.clar`
-  Trait interface used by `invoicebtc` for SIP-010 token interaction.
-- `contracts/mock-sbtc.clar`
-  Local test-only SIP-010 token used by the contract test suite. It is not part of the public testnet runtime flow.
+  Trait interface aligned with the standard testnet sBTC SIP-010 transfer call used by `invoicebtc`.
 
 ## Architecture Summary
 
 - `contracts/invoicebtc.clar` stores invoice roles, milestones, escrow accounting, LP funding progress, settlement totals, and refund totals.
 - `frontend/` is a Next.js app that connects testnet wallets, reads invoice data from the Stacks API, derives real permissions from connected wallet addresses, and submits contract calls with post conditions on token-moving transactions.
-- `tests/invoicebtc.test.js` verifies the staged milestone funding sequence in Clarinet simnet.
+- the repo is configured for public testnet deployment and runtime, not for local simnet/devnet testing
 
 ## Contract Storage Design
 
@@ -77,7 +75,7 @@ This repo does not currently implement:
 Public functions:
 
 - `create-invoice`
-  Creates the invoice and all milestone records. The milestone face values must sum to the invoice face value, and milestone LP repayments must also sum to the invoice face value.
+  Creates the invoice and milestone records. Milestone face values and LP repayment totals must match the invoice face value.
 - `merchant-sign-invoice`
   Merchant signs on-chain.
 - `client-sign-invoice`
@@ -91,7 +89,7 @@ Public functions:
 - `approve-milestone`
   Client confirms a submitted milestone and unlocks the next milestone.
 - `settle-milestone`
-  At invoice maturity, the funded LP claims repayment from escrow for all currently approved and unsettled milestones. Any unresolved milestones are pushed into dispute.
+  At invoice maturity, the funded LP claims repayment from escrow for all approved and unsettled milestones. Unresolved milestones are pushed into dispute.
 - `open-dispute`
   Merchant or client can open dispute on an overdue funded/submitted milestone.
 - `cancel-invoice`
@@ -108,9 +106,7 @@ Read-only functions:
 - `get-invoice-summary`
 - `get-last-invoice-id`
 - `can-fund`
-  Returns whether the invoice is in a fundable state and still within the funding deadline. It does not validate a specific milestone.
 - `can-settle`
-  Returns whether settlement is generally allowed for the invoice and milestone combination at the current block height.
 
 ## Actual State Model
 
@@ -214,27 +210,26 @@ Set these values in `frontend/.env.local`:
 
 ```bash
 NEXT_PUBLIC_STACKS_API_BASE=https://api.testnet.hiro.so
-NEXT_PUBLIC_CONTRACT_ADDRESS=ST1YOURTESTNETADDRESS
+NEXT_PUBLIC_CONTRACT_ADDRESS=ST1YBHMDH6ESJ1DBY8MK72XER9BG9646QMCS610PE
 NEXT_PUBLIC_CONTRACT_NAME=invoicebtc
-NEXT_PUBLIC_SBTC_CONTRACT_ADDRESS=ST1YOURTESTNETTOKENADDRESS
-NEXT_PUBLIC_SBTC_CONTRACT_NAME=sbtc-token
-NEXT_PUBLIC_SBTC_TOKEN_NAME=sbtc
 NEXT_PUBLIC_EXPLORER_BASE=https://explorer.hiro.so/txid
 ```
 
+Current deployed public testnet contract:
+
+- `ST1YBHMDH6ESJ1DBY8MK72XER9BG9646QMCS610PE.invoicebtc`
+
+This repo is hardwired to the standard public testnet sBTC token principal:
+
+- `ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token`
+
 Use `settings/Testnet.toml` and `DEPLOYMENT_CHECKLIST.md` for public testnet deployment and demo prep.
 
-## Local Test Harness
+## Local Tooling
 
-Even though the app runtime is public-testnet only, the repo now includes local contract test artifacts again:
-
-- `contracts/mock-sbtc.clar`
-- `settings/Devnet.toml`
-- `deployments/default.simnet-plan.yaml`
-- `vitest.config.js`
-- `tests/invoicebtc.test.js`
-
-These exist only to support local contract verification. They are not used by the public testnet frontend runtime.
+- Node.js `22.14.0` is pinned in `.nvmrc`.
+- Clarinet `3.x` is required for the official sBTC requirement flow used by this repo.
+- The contract source references Clarinet's canonical `SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token` requirement, and the generated testnet deployment plan remaps it to `ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token`.
 
 ## How To Run
 
@@ -247,27 +242,12 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-Contract tests:
+Production build:
 
 ```bash
-npm install
-npm test
+cd frontend
+npm run build
 ```
-
-## Current Test Coverage
-
-`tests/invoicebtc.test.js` currently covers:
-
-1. cannot fund any milestone before both signatures
-2. cannot fund any milestone before client escrow deposit
-3. can fund first milestone after signatures and escrow
-4. cannot fund second milestone before first milestone completion submission
-5. cannot fund second milestone before first milestone client confirmation
-6. merchant cannot submit completion for unfunded milestone
-7. client cannot confirm before merchant completion submission
-8. proof hash is stored correctly
-9. full staged sequence works across multiple milestones
-10. duplicate funding, submission, and confirmation are blocked
 
 ## 3 Browser Profile Demo
 
@@ -289,9 +269,8 @@ Demo sequence:
 10. LP settles approved milestones from escrow.
 11. If any milestones remain unresolved at settlement, the invoice moves into dispute for those unresolved portions.
 
-## Migration Notes
+## Public-Testnet-Only Note
 
-- LP funding is now milestone-by-milestone instead of one upfront discounted invoice funding call.
-- Invoice storage now tracks `total-lp-advanced`.
-- The invoice detail UI now renders milestone-stage LP funding, merchant submission, and client confirmation actions.
-- The repo includes local-only Clarinet test support again, while the frontend runtime remains public-testnet only.
+- the app is configured only for Stacks public testnet runtime
+- the repo no longer includes local simnet/devnet contract test artifacts
+- the frontend and contract are fixed to the standard public testnet sBTC contract principal `ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token`

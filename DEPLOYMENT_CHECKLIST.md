@@ -11,13 +11,15 @@ Use this checklist before demo day or before sharing the repo with someone who w
 ## 2. Contract Review
 
 - Verify [`contracts/invoicebtc.clar`](/c:/Users/HP/Desktop/invoicebtc-mvp/contracts/invoicebtc.clar) is the contract you intend to deploy.
-- Verify [`contracts/sip-010-trait.clar`](/c:/Users/HP/Desktop/invoicebtc-mvp/contracts/sip-010-trait.clar) matches the SIP-010 transfer and balance calls your token integration expects.
-- Confirm the token contract you will use on testnet is SIP-010 compatible and available at the address you plan to configure in the frontend.
+- Verify [`contracts/sip-010-trait.clar`](/c:/Users/HP/Desktop/invoicebtc-mvp/contracts/sip-010-trait.clar) matches the standard testnet sBTC transfer call used by the contract.
+- Confirm the fixed sBTC token principal is `ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token`.
 
 ## 3. Clarinet Testnet Config
 
 - Review [`Clarinet.toml`](/c:/Users/HP/Desktop/invoicebtc-mvp/Clarinet.toml).
 - Review [`settings/Testnet.toml`](/c:/Users/HP/Desktop/invoicebtc-mvp/settings/Testnet.toml).
+- Use Clarinet `3.x`.
+- Confirm the generated deployment plan remaps the canonical `SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token` requirement to `ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token` for testnet.
 - Confirm the testnet RPC endpoint is reachable.
 
 ## 4. Deploy Contracts
@@ -26,7 +28,7 @@ From the repo root:
 
 ```bash
 clarinet check
-clarinet deployments generate --testnet
+clarinet deployments generate --testnet --manual-cost
 clarinet deployments apply --testnet
 ```
 
@@ -42,11 +44,8 @@ Create `frontend/.env.local` from [`frontend/.env.local.example`](/c:/Users/HP/D
 
 ```bash
 NEXT_PUBLIC_STACKS_API_BASE=https://api.testnet.hiro.so
-NEXT_PUBLIC_CONTRACT_ADDRESS=ST1YOURDEPLOYERADDRESS
+NEXT_PUBLIC_CONTRACT_ADDRESS=ST1YBHMDH6ESJ1DBY8MK72XER9BG9646QMCS610PE
 NEXT_PUBLIC_CONTRACT_NAME=invoicebtc
-NEXT_PUBLIC_SBTC_CONTRACT_ADDRESS=ST1YOURTOKENADDRESS
-NEXT_PUBLIC_SBTC_CONTRACT_NAME=YOUR_SBTC_TOKEN_CONTRACT
-NEXT_PUBLIC_SBTC_TOKEN_NAME=sbtc
 NEXT_PUBLIC_EXPLORER_BASE=https://explorer.hiro.so/txid
 ```
 
@@ -91,6 +90,6 @@ Dry-run the happy path:
 
 - Clear stale browser sessions if wallet identities look wrong.
 - Confirm `.env.local` points to testnet, not placeholder values.
-- Confirm the token contract address is correct.
+- Confirm the app and contract are both targeting `ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token`.
 - Confirm the explorer links open the testnet explorer.
 - Confirm the three wallet profiles each have the balances needed for the demo.
