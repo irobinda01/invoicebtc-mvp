@@ -125,7 +125,7 @@
           (is-eq (get status invoice) invoice-active)
         )
         (is-eq (get total-escrowed invoice) (get face-value invoice))
-        (<= block-height (get funding-deadline invoice))
+        (<= stacks-block-height (get funding-deadline invoice))
       )
     )
     err-not-found
@@ -148,7 +148,7 @@
               (is-eq (get status invoice) invoice-active)
             )
             (is-some (get lp invoice))
-            (<= (get maturity-height invoice) block-height)
+            (<= (get maturity-height invoice) stacks-block-height)
             (< (get total-settled invoice) (get face-value invoice))
             (not
               (or
@@ -268,7 +268,7 @@
       (begin
         (asserts! (> face-value u0) err-invalid-milestones)
         (asserts! (> merchant-payout u0) err-invalid-milestones)
-        (asserts! (> due-height block-height) err-deadline-invalid)
+        (asserts! (> due-height stacks-block-height) err-deadline-invalid)
         (asserts! (<= due-height maturity-height) err-deadline-invalid)
         (asserts! (is-eq face-value lp-repayment) err-invalid-total)
         (map-set milestones
@@ -429,9 +429,9 @@
   )
 )
 
-(define-private (transfer-sbtc (token-contract <sip-010-token>) (amount uint) (sender principal) (recipient principal))
+(define-private (transfer-sbtc (amount uint) (sender principal) (recipient principal))
   (begin
-    (unwrap! (contract-call? token-contract transfer amount sender recipient none) err-transfer-failed)
+    (unwrap! (contract-call? 'ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token transfer amount sender recipient none) err-transfer-failed)
     (ok true)
   )
 )
@@ -460,7 +460,7 @@
       (asserts! (is-eq milestone-count (len milestone-merchant-payouts)) err-invalid-milestones)
       (asserts! (is-eq milestone-count (len milestone-lp-repayments)) err-invalid-milestones)
       (asserts! (is-eq milestone-count (len milestone-due-heights)) err-invalid-milestones)
-      (asserts! (> funding-deadline block-height) err-deadline-invalid)
+      (asserts! (> funding-deadline stacks-block-height) err-deadline-invalid)
       (asserts! (> maturity-height funding-deadline) err-deadline-invalid)
       (asserts! (is-eq milestone-face-total face-value) err-invalid-total)
       (asserts! (is-eq lp-repayment-total face-value) err-invalid-total)
@@ -492,7 +492,7 @@
           face-value: face-value,
           total-lp-funding: merchant-payout-total,
           status: invoice-draft,
-          created-at: block-height,
+          created-at: stacks-block-height,
           funding-deadline: funding-deadline,
           maturity-height: maturity-height,
           metadata-hash: metadata-hash,
@@ -563,7 +563,7 @@
   )
 )
 
-(define-public (fund-escrow (token-contract <sip-010-token>) (invoice-id uint) (amount uint))
+(define-public (fund-escrow (invoice-id uint) (amount uint))
   (let ((invoice (try! (get-existing-invoice invoice-id))))
     (begin
       (try! (assert-client invoice-id))
@@ -578,7 +578,7 @@
       )
       (asserts! (is-eq (get total-escrowed invoice) u0) err-invalid-funding)
       (asserts! (is-eq amount (get face-value invoice)) err-invalid-funding)
-      (try! (transfer-sbtc token-contract amount tx-sender contract-self))
+      (try! (transfer-sbtc amount tx-sender contract-self))
       (map-set invoices invoice-id
         (merge invoice
           {
@@ -592,7 +592,7 @@
   )
 )
 
-(define-public (fund-milestone (token-contract <sip-010-token>) (invoice-id uint) (milestone-id uint))
+(define-public (fund-milestone (invoice-id uint) (milestone-id uint))
   (let ((invoice (try! (get-existing-invoice invoice-id))))
     (let (
         (milestone (try! (get-existing-milestone invoice-id milestone-id)))
@@ -606,7 +606,7 @@
           )
           err-invalid-state
         )
-        (asserts! (<= block-height (get funding-deadline invoice)) err-deadline-passed)
+        (asserts! (<= stacks-block-height (get funding-deadline invoice)) err-deadline-passed)
         (asserts! (is-eq (get total-escrowed invoice) (get face-value invoice)) err-invalid-state)
         (asserts! (is-eq (get state milestone) milestone-pending) err-invalid-milestone-state)
         (asserts! (previous-milestone-cleared invoice-id milestone-id) err-invalid-state)
@@ -617,7 +617,7 @@
           )
           err-not-lp
         )
-        (try! (transfer-sbtc token-contract advance-amount tx-sender (get merchant invoice)))
+        (try! (transfer-sbtc advance-amount tx-sender (get merchant invoice)))
         (map-set milestones
           { invoice-id: invoice-id, milestone-id: milestone-id }
           (merge milestone { state: milestone-funded })
@@ -684,7 +684,7 @@
   )
 )
 
-(define-public (settle-milestone (token-contract <sip-010-token>) (invoice-id uint) (milestone-id uint))
+(define-public (settle-milestone (invoice-id uint) (milestone-id uint))
   (let (
       (invoice (try! (get-existing-invoice invoice-id)))
       (milestone (try! (get-existing-milestone invoice-id milestone-id)))
@@ -766,9 +766,9 @@
         err-invalid-state
       )
       milestone
-      (asserts! (<= (get maturity-height invoice) block-height) err-too-early)
+      (asserts! (<= (get maturity-height invoice) stacks-block-height) err-too-early)
       (if (> approved-repayment u0)
-        (try! (transfer-sbtc token-contract approved-repayment contract-self lp))
+        (try! (transfer-sbtc approved-repayment contract-self lp))
         true
       )
       (try! (settle-approved-milestone-at invoice-id u0 (get milestone-count invoice)))
@@ -852,7 +852,7 @@
         )
         err-invalid-milestone-state
       )
-      (asserts! (> block-height (get due-block-height milestone)) err-too-early)
+      (asserts! (> stacks-block-height (get due-block-height milestone)) err-too-early)
       (map-set milestones
         { invoice-id: invoice-id, milestone-id: milestone-id }
         (merge milestone { state: milestone-disputed })
@@ -906,7 +906,7 @@
   )
 )
 
-(define-public (refund-leftover (token-contract <sip-010-token>) (invoice-id uint))
+(define-public (refund-leftover (invoice-id uint))
   (let (
       (invoice (try! (get-existing-invoice invoice-id)))
       (available (- (- (get total-escrowed invoice) (get total-settled invoice)) (get total-refunded invoice)))
@@ -921,7 +921,7 @@
         err-invalid-state
       )
       (asserts! (> available u0) err-no-leftover)
-      (try! (transfer-sbtc token-contract available contract-self tx-sender))
+      (try! (transfer-sbtc available contract-self tx-sender))
       (map-set invoices invoice-id
         (merge invoice { total-refunded: (+ (get total-refunded invoice) available) })
       )

@@ -6,10 +6,23 @@ import {
   CONTRACT_ADDRESS,
   CONTRACT_NAME,
 } from './config'
+import { cvToJSON, hexToCV } from '@stacks/transactions'
 import type { Invoice, Milestone } from './types'
 import { STATUS_CODES, MILESTONE_STATUS_CODES } from './types'
 
 const API = STACKS_API_BASE
+
+export interface ChainInfo {
+  stacksTipHeight: number
+  burnBlockHeight: number
+  stablePoxConsensus: string | null
+  serverVersion: string | null
+}
+
+export interface InvoiceReadiness {
+  canFund: boolean
+  settlementEligibleMilestones: number[]
+}
 
 async function callReadOnly(
   fn: string,
@@ -23,7 +36,11 @@ async function callReadOnly(
     body: JSON.stringify({ sender, arguments: args }),
   })
   if (!res.ok) throw new Error(`API error: ${res.status}`)
-  return res.json()
+  const data = await res.json() as { okay?: boolean; result?: string; cause?: string }
+  if (!data.okay || !data.result) {
+    throw new Error(data.cause || 'Read-only call failed')
+  }
+  return cvToJSON(hexToCV(data.result))
 }
 
 // Encode a uint as Clarity hex for read-only call arguments
@@ -39,45 +56,55 @@ function parseClarityValue(val: unknown): unknown {
   if (typeof val === 'object') {
     const v = val as Record<string, unknown>
     if (v.type === 'uint') return BigInt(v.value as string)
-    if (v.type === 'bool') return v.value === 'true'
+    if (v.type === 'bool') return v.value === 'true' || v.value === true
     if (v.type === 'principal') return v.value as string
     if (v.type === 'buff') return v.value as string
-    if (v.type === '(optional ...)' || v.type === 'optional') {
+    if (typeof v.type === 'string' && (v.type.startsWith('(optional') || v.type === 'optional')) {
       return v.value ? parseClarityValue(v.value) : null
     }
-    if (v.type === 'tuple') {
+    if (typeof v.type === 'string' && v.type.startsWith('(tuple')) {
       const result: Record<string, unknown> = {}
       for (const [k, subVal] of Object.entries(v.value as Record<string, unknown>)) {
         result[k] = parseClarityValue(subVal)
       }
       return result
     }
-    if (v.type === '(ok ...)' || v.type === 'ok') {
+    if (typeof v.type === 'string' && v.type.startsWith('(response') && v.success === true) {
       return { ok: parseClarityValue(v.value) }
     }
-    if (v.type === '(err ...)' || v.type === 'err') {
+    if (typeof v.type === 'string' && v.type.startsWith('(response') && v.success === false) {
       return { err: parseClarityValue(v.value) }
     }
   }
   return val
 }
 
-// Parse the raw API response into a typed Invoice object
+function unwrapOptionalTuple(
+  raw: Record<string, unknown>,
+): Record<string, { type: string; value: unknown }> | null {
+  const optResult = raw as {
+    type?: string
+    value?: {
+      type?: string
+      value?: Record<string, { type: string; value: unknown }>
+    } | null
+  }
+  if (!optResult.type || optResult.type === '(optional none)' || optResult.value === null) return null
+  return optResult.value?.value ?? null
+}
+
+function parseResponseBool(raw: unknown): boolean {
+  const parsed = parseClarityValue(raw)
+  if (typeof parsed === 'object' && parsed && 'ok' in (parsed as Record<string, unknown>)) {
+    return Boolean((parsed as { ok?: unknown }).ok)
+  }
+  return false
+}
+
+// Parse the decoded Clarity JSON into a typed Invoice object
 function parseInvoiceResult(raw: Record<string, unknown>, id: number): Invoice | null {
   try {
-    const result = raw as {
-      okay: boolean
-      result?: {
-        type: string
-        value?: Record<string, unknown> | null
-      }
-    }
-    if (!result.okay) return null
-    const optResult = result.result
-    if (!optResult || optResult.type === 'none' || optResult.value === null) return null
-
-    // The result is (some {...}) from get-invoice
-    const tupleVal = optResult.value as Record<string, { type: string; value: unknown }>
+    const tupleVal = unwrapOptionalTuple(raw)
     if (!tupleVal) return null
 
     const g = (key: string) => {
@@ -86,9 +113,9 @@ function parseInvoiceResult(raw: Record<string, unknown>, id: number): Invoice |
       if (entry.type === 'uint') return BigInt(entry.value as string)
       if (entry.type === 'bool') return entry.value === 'true' || entry.value === true
       if (entry.type === 'principal') return entry.value as string
-      if (entry.type === 'buff') return entry.value as string
-      if (entry.type === '(optional principal)' || entry.type === 'optional') {
-        return entry.value ? (entry.value as { value: string }).value ?? entry.value : null
+      if (typeof entry.type === 'string' && entry.type.startsWith('(buff')) return entry.value as string
+      if (typeof entry.type === 'string' && entry.type.startsWith('(optional')) {
+        return entry.value ? (entry.value as { value?: string }).value ?? entry.value : null
       }
       return entry.value
     }
@@ -128,18 +155,7 @@ function parseMilestoneResult(
   milestoneId: number
 ): Milestone | null {
   try {
-    const result = raw as {
-      okay: boolean
-      result?: {
-        type: string
-        value?: Record<string, unknown> | null
-      }
-    }
-    if (!result.okay) return null
-    const optResult = result.result
-    if (!optResult || optResult.type === 'none' || optResult.value === null) return null
-
-    const tupleVal = optResult.value as Record<string, { type: string; value: unknown }>
+    const tupleVal = unwrapOptionalTuple(raw)
     if (!tupleVal) return null
 
     const g = (key: string) => {
@@ -147,8 +163,8 @@ function parseMilestoneResult(
       if (!entry) return undefined
       if (entry.type === 'uint') return BigInt(entry.value as string)
       if (entry.type === 'bool') return entry.value === 'true' || entry.value === true
-      if (entry.type === '(optional (buff 32))' || entry.type === 'optional') {
-        return entry.value ? (entry.value as { value: string }).value ?? entry.value : null
+      if (typeof entry.type === 'string' && entry.type.startsWith('(optional')) {
+        return entry.value ? (entry.value as { value?: string }).value ?? entry.value : null
       }
       return entry.value
     }
@@ -201,10 +217,63 @@ export async function fetchAllMilestones(
 export async function fetchNextInvoiceId(): Promise<number> {
   try {
     const raw = await callReadOnly('get-last-invoice-id', [])
-    const parsed = parseClarityValue((raw as { result?: unknown }).result)
+    const parsed = parseClarityValue(raw)
     return typeof parsed === 'bigint' ? Number(parsed) : 0
   } catch {
     return 0
+  }
+}
+
+export async function fetchChainInfo(): Promise<ChainInfo> {
+  const response = await fetch(`${API}/v2/info`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`Chain info error: ${response.status}`)
+  const data = await response.json() as {
+    stacks_tip_height?: number
+    burn_block_height?: number
+    stable_pox_consensus?: string
+    server_version?: string
+  }
+
+  return {
+    stacksTipHeight: data.stacks_tip_height ?? 0,
+    burnBlockHeight: data.burn_block_height ?? 0,
+    stablePoxConsensus: data.stable_pox_consensus ?? null,
+    serverVersion: data.server_version ?? null,
+  }
+}
+
+export async function fetchLiveInvoices(limit: number = 20): Promise<Invoice[]> {
+  const lastId = await fetchNextInvoiceId()
+  if (lastId < 1) return []
+
+  const count = Math.min(lastId, Math.max(limit, 1))
+  const ids = Array.from({ length: count }, (_, i) => lastId - i)
+  const results = await Promise.all(ids.map(id => fetchInvoice(id).catch(() => null)))
+  return results.filter(Boolean) as Invoice[]
+}
+
+export async function fetchInvoiceReadiness(
+  invoiceId: number,
+  milestoneCount: number,
+): Promise<InvoiceReadiness> {
+  const [canFund, settleResponses] = await Promise.all([
+    callReadOnly('can-fund', [encodeUint(invoiceId)])
+      .then(parseResponseBool)
+      .catch(() => false),
+    Promise.all(
+      Array.from({ length: milestoneCount }, (_, index) =>
+        callReadOnly('can-settle', [encodeUint(invoiceId), encodeUint(index + 1)])
+          .then(parseResponseBool)
+          .catch(() => false),
+      ),
+    ),
+  ])
+
+  return {
+    canFund,
+    settlementEligibleMilestones: settleResponses
+      .map((isEligible, index) => (isEligible ? index + 1 : null))
+      .filter((value): value is number => value !== null),
   }
 }
 
